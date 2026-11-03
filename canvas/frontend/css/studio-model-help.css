@@ -1,0 +1,26 @@
+/* Only menus with our explanatory copy; other providers keep their own layout. */
+.video-model-menu:has(.video-model-option-usage) {
+  width: 390px;
+  min-width: min(390px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: min(640px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+.video-model-menu .video-model-option-usage {
+  display: block;
+  margin: 4px 0;
+  color: #d3e5e3;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.video-model-menu:has(.video-model-option-usage) .video-model-option-label {
+  font-weight: 650;
+  white-space: normal;
+}
+.video-model-menu:has(.video-model-option-usage) .video-model-option-desc {
+  color: #aaa;
+  line-height: 1.5;
+  white-space: normal;
+}

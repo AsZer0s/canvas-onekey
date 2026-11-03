@@ -1,0 +1,19 @@
+.btn-quick-mention-all {
+  color: #122526;
+  background: #22d3da;
+  border: 1px solid #22d3da;
+  font-weight: 700;
+}
+.btn-quick-mention-all:hover { background: #5ee7ec; color: #122526; }
+.media-toolbar-extract .media-tool-direct {
+  color: #c8f5ef;
+  padding: 6px 8px;
+  min-height: 30px;
+  white-space: nowrap;
+}
+.media-toolbar-extract .media-tool-direct[data-action="frame-last"] {
+  color: #ffe369;
+  font-weight: 700;
+}
+.media-tool-direct:focus-visible,
+.btn-quick-mention-all:focus-visible { outline: 2px solid #ffe369; outline-offset: 2px; }

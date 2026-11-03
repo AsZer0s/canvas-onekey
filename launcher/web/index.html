@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画布一键包</title>
+<style>
+:root{--bg:#f6f4ee;--card:#fff;--ink:#1d1d1b;--muted:#6b6a64;--line:#e2ded3;--accent:#0f766e;--accent-ink:#fff;--warn:#b45309;--warn-bg:#fff4e0;--bad:#b91c1c;--ok:#15803d;--bar:#e9e5da}
+@media (prefers-color-scheme: dark){:root{--bg:#161614;--card:#21211e;--ink:#eeebe3;--muted:#a19f97;--line:#36352f;--accent:#2dd4bf;--accent-ink:#0b1513;--warn:#fbbf24;--warn-bg:#3a2c10;--bad:#f87171;--ok:#4ade80;--bar:#33322c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,"Microsoft YaHei","PingFang SC",sans-serif}
+main{max-width:980px;margin:0 auto;padding:24px 16px 60px}
+h1{font-size:24px;margin:0 0 4px}
+h2{font-size:17px;margin:0 0 12px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.kv{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.kv b{display:block;font-size:12px;color:var(--muted);font-weight:500}
+.kv span{font-size:15px;font-weight:600;word-break:break-all}
+.note{background:var(--warn-bg);color:var(--warn);border-radius:8px;padding:8px 12px;margin-top:10px}
+.err{color:var(--bad)}
+.pack{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:10px}
+.pack.disabled{opacity:.55}
+.pack input{margin-top:5px;width:18px;height:18px;accent-color:var(--accent)}
+.pack .t{font-weight:650}
+.pack .d{color:var(--muted);font-size:14px}
+.pack .w{color:var(--warn);font-size:13px}
+.tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;margin-left:6px;vertical-align:1px;border:1px solid var(--line)}
+.tag.rec{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.tag.done{color:var(--ok);border-color:var(--ok)}
+.btns{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px}
+button{font:inherit;padding:9px 18px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:650}
+button:disabled{opacity:.5;cursor:not-allowed}
+.file{margin:8px 0}
+.file .n{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.bar{height:8px;background:var(--bar);border-radius:99px;overflow:hidden;margin-top:3px}
+.bar i{display:block;height:100%;background:var(--accent);width:0}
+pre{background:var(--bar);border-radius:8px;padding:10px;max-height:260px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:10px 0 0}
+label.row{display:flex;gap:8px;align-items:center;margin:6px 0}
+input[type=text]{font:inherit;width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+.svc span{margin-right:16px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:5px}
+.dot.ok{background:var(--ok)}.dot.run{background:var(--warn)}
+a{color:var(--accent)}
+footer{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+  <h1>画布一键包</h1>
+  <p class="sub">第一步自检电脑，第二步勾选要装的功能并下载，第三步启动画布。下载可以随时暂停，下次接着下。</p>
+
+  <section class="card">
+    <h2>① 电脑自检</h2>
+    <div class="grid" id="hw"></div>
+    <div id="hwnote"></div>
+  </section>
+
+  <section class="card">
+    <h2>② 选择要安装的功能</h2>
+    <p class="sub" style="margin-bottom:12px">按你的显卡自动勾选了推荐项。灰色的是这张显卡跑不动的。ComfyUI 和 PyTorch 第一次会自动装（约 8GB）。</p>
+    <div id="packs"></div>
+    <details style="margin-top:8px">
+      <summary>下载设置（下载很慢或连不上时看这里）</summary>
+      <label class="row"><input type="checkbox" id="mirror"> 使用国内镜像：模型从 hf-mirror.com 下载，Python 包从清华镜像下载</label>
+      <div id="net" class="d" style="color:var(--muted);font-size:13px"></div>
+      <p style="margin:10px 0 4px">已经装过 ComfyUI、手上有同名模型文件？填它的 models 文件夹，会直接链接 / 复制过来，不用重下（可不填）：</p>
+      <input type="text" id="importdir" placeholder="例如 D:\ComfyUI\models">
+    </details>
+    <div class="btns">
+      <button class="primary" id="install">开始安装</button>
+      <button id="pause">暂停下载</button>
+      <span id="total" style="align-self:center;color:var(--muted)"></span>
+    </div>
+  </section>
+
+  <section class="card" id="progresscard" hidden>
+    <h2>安装进度 <span id="stage" style="font-weight:400;color:var(--muted)"></span></h2>
+    <div id="files"></div>
+    <div id="joberr" class="err"></div>
+    <details><summary>详细日志</summary><pre id="log"></pre></details>
+  </section>
+
+  <section class="card">
+    <h2>③ 启动画布</h2>
+    <div class="svc" id="svc"></div>
+    <div class="btns">
+      <button class="primary" id="start">启动画布</button>
+      <button id="open">打开画布</button>
+      <button id="stop">停止</button>
+    </div>
+    <details style="margin-top:10px"><summary>出问题时看后台日志</summary>
+      <div class="btns"><button data-log="comfyui">ComfyUI 日志</button><button data-log="canvas">画布日志</button><button data-log="worker">任务服务日志</button></div>
+      <pre id="svclog" hidden></pre>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2>④ 导入我的参考图（可选）</h2>
+    <p class="sub" style="margin-bottom:10px">把电脑里一个放参考图的文件夹（自己拍的照片、画的线稿、一张张存下来的姿势图……）变成画布里的一个画板。之后在画布节点上点「+」打开「选择素材」，左上角切到这个画板，就能按子文件夹浏览、搜索、添加。只导入你自己有权使用的图片；要先启动画布。</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input type="text" id="refdir" placeholder="参考图文件夹，例如 D:\参考图\姿势" style="flex:1 1 320px">
+      <button id="refpick">选择文件夹…</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+      <input type="text" id="refname" placeholder="画板名字（不填就用文件夹名）" style="flex:1 1 220px">
+      <button class="primary" id="refimport">导入成画板</button>
+    </div>
+    <div id="refmsg" style="margin-top:6px;color:var(--muted);font-size:14px"></div>
+  </section>
+
+  <footer>
+    画布来自开源项目「无限画布」，作者只允许个人学习、教学和<b>免费、非商业</b>分享，详见包里的 LICENSE 和 DISCLAIMER.md。
+    模型由各自作者发布（MiniMax H3、Qwen-Image、MOSS-Image 来自 Comfy-Org 官方仓库，写实 LoRA 来自 Danrisi、e-n-v-y），按各自仓库的条款使用。
+  </footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const gb = (b) => (b / 1e9).toFixed(b > 1e10 ? 0 : 1) + "GB";
+let check = null, chosen = new Set(), canvasUrl = "http://127.0.0.1:10027/";
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+const famName = { blackwell: "Blackwell（50 系 / RTX PRO 6000）", ada: "Ada（40 系）", ampere: "Ampere（30 系 / A 系列）", old: "较老架构" };
+function renderHw() {
+  const c = check, g = c.gpu;
+  const kv = (k, v) => `<div class="kv"><b>${k}</b><span>${v}</span></div>`;
+  $("hw").innerHTML = g ? kv("显卡", g.name) + kv("显存", g.vram_gb + " GB") + kv("架构", famName[c.family] || "-") +
+    kv("驱动", g.driver) + kv("内存", c.ram_gb + " GB") + kv("这个盘剩余空间", c.disk_free_gb + " GB")
+    : kv("显卡", '<span class="err">没有检测到 NVIDIA 显卡</span>') + kv("内存", c.ram_gb + " GB") + kv("这个盘剩余空间", c.disk_free_gb + " GB");
+  const notes = [];
+  if (c.error) notes.push(c.error);
+  if (c.gpus.length > 1) notes.push(`检测到 ${c.gpus.length} 张显卡，一键包只用显存最大的那张（${g.name}）。`);
+  if (c.torch_note) notes.push(c.torch_note);
+  // 自检时画布还没跑，这时被占用的显存都是别的程序（微信、剪映、浏览器、游戏、显卡叠加层……）
+  if (g && g.used_gb >= 2 && !check.services_running) notes.push(`现在有其他程序占着 ${g.used_gb}GB 显存。做视频前最好关掉微信、剪映、游戏、NVIDIA 叠加层这类程序；H3 放不下显存时会慢好几倍。`);
+  if (g && c.family === "blackwell") notes.push("50 系显卡可以用 NVFP4 版 H3 文本编码器，省显存也更快。");
+  else if (g) notes.push("这张卡不是 50 系，用不了 NVFP4，H3 文本编码器会用 int8 版（27GB，更吃内存）。");
+  if (c.network) notes.push('<b>一键包放在网络共享 / NAS 上（' + c.root + '）。</b>模型有几十到上百 GB，从 NAS 读写会很慢，还可能中途出错。强烈建议把整个文件夹复制到本机硬盘（固态最好）再打开，然后再点「开始安装」。');
+  if (!c.ascii_path) notes.push("提示：一键包放在带中文的路径里（" + c.root + "）。一般没问题；如果安装报奇怪的错，把整个文件夹挪到纯英文路径（比如 D:\\canvas）再试。");
+  $("hwnote").innerHTML = notes.map((n) => `<div class="note">${n}</div>`).join("");
+}
+function renderPacks() {
+  $("packs").innerHTML = check.packs.map((p) => `
+    <label class="pack ${p.enabled ? "" : "disabled"}">
+      <input type="checkbox" data-pack="${p.id}" ${chosen.has(p.id) ? "checked" : ""} ${p.enabled ? "" : "disabled"}>
+      <div>
+        <div class="t">${p.name}${p.recommended ? '<span class="tag rec">推荐</span>' : ""}${p.installed ? '<span class="tag done">已安装</span>' : ""}
+          <span class="tag">${p.installed ? p.size_gb + "GB" : p.missing_gb < p.size_gb ? "还要下 " + p.missing_gb + "GB" : p.size_gb + "GB"}</span></div>
+        <div class="d">${p.desc}</div>${p.warn ? `<div class="w">${p.warn}</div>` : ""}
+      </div>
+    </label>`).join("") || '<div class="err">没有检测到能用的 NVIDIA 显卡，一键包装不了本地模型。</div>';
+  document.querySelectorAll("[data-pack]").forEach((el) => el.onchange = () => {
+    el.checked ? chosen.add(el.dataset.pack) : chosen.delete(el.dataset.pack); total();
+  });
+  total();
+}
+function total() {
+  // 几个包会共用同一个文件（比如 H3 的文本编码器），按文件去重再加
+  const files = {};
+  check.packs.filter((p) => chosen.has(p.id)).forEach((p) => Object.assign(files, p.missing));
+  const need = Object.values(files).reduce((s, b) => s + b, 0) / 1e9;
+  $("total").textContent = need ? `还要下载约 ${Math.round(need)}GB 模型${check.comfy_ready ? "" : " + 约 8GB 程序"}` : (check.comfy_ready ? "选中的都装好了" : "会先装 ComfyUI（约 8GB）");
+}
+async function load(force) {
+  check = await api("/api/check" + (force ? "?force=1" : ""));
+  if (!chosen.size) check.packs.forEach((p) => { if (p.installed || (p.recommended && !check.state.packs)) chosen.add(p.id); });
+  $("mirror").checked = !!check.settings.mirror;
+  $("importdir").value = (check.settings.import_dirs || [])[0] || "";
+  renderHw(); renderPacks();
+}
+async function saveSettings() {
+  await api("/api/settings", { method: "POST", body: JSON.stringify({ mirror: $("mirror").checked, import_dirs: [$("importdir").value] }) });
+}
+$("mirror").onchange = saveSettings; $("importdir").onchange = saveSettings;
+$("install").onclick = async () => {
+  try { await saveSettings(); await api("/api/install", { method: "POST", body: JSON.stringify({ packs: [...chosen] }) }); poll(); }
+  catch (e) { alert(e.message); }
+};
+$("pause").onclick = () => api("/api/pause", { method: "POST" });
+$("start").onclick = async () => { try { await api("/api/start", { method: "POST" }); waitCanvas(); } catch (e) { alert(e.message); } };
+$("open").onclick = () => window.open(canvasUrl, "_blank");
+$("stop").onclick = () => api("/api/stop", { method: "POST" }).then(svc);
+document.querySelectorAll("[data-log]").forEach((b) => b.onclick = async () => {
+  const j = await api("/api/log/" + b.dataset.log); $("svclog").hidden = false; $("svclog").textContent = j.text || "（还没有日志）";
+});
+$("refpick").onclick = async () => {
+  $("refmsg").textContent = "已在桌面弹出「选择文件夹」窗口（可能在浏览器后面）……";
+  try { const j = await api("/api/refs/pick", { method: "POST" }); if (j.folder) $("refdir").value = j.folder; $("refmsg").textContent = ""; }
+  catch (e) { $("refmsg").textContent = e.message; }
+};
+$("refimport").onclick = async () => {
+  try {
+    const j = await api("/api/refs/import", { method: "POST", body: JSON.stringify({ folder: $("refdir").value, name: $("refname").value }) });
+    $("refmsg").textContent = `开始导入 ${j.count} 张，进度见上面的「安装进度」。导入完刷新画布页面。`; poll();
+  } catch (e) { $("refmsg").textContent = e.message; }
+};
+let polling = false;
+async function poll() {
+  if (polling) return; polling = true;
+  try {
+    for (;;) {
+      const p = await api("/api/progress");
+      $("progresscard").hidden = false;
+      $("stage").textContent = p.running ? "· " + p.stage : p.error ? "· 停下了" : p.stage === "完成" ? "· 完成" : "";
+      $("joberr").textContent = p.error || "";
+      $("files").innerHTML = Object.entries(p.files).map(([name, f]) => {
+        const pct = f.total ? Math.min(100, f.done / f.total * 100) : 0;
+        const st = { done: "完成", downloading: f.speed ? (f.speed / 1e6).toFixed(1) + "MB/s" : "下载中", retrying: f.error, paused: "已暂停", failed: f.error }[f.state] || "";
+        return `<div class="file"><div class="n"><span>${name}</span><span>${f.total ? gb(f.done) + " / " + gb(f.total) : ""} · ${st}</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+      }).join("");
+      $("log").textContent = p.log.join("\n"); $("log").scrollTop = 1e9;
+      if (!p.running) { await load(true); break; }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } finally { polling = false; }
+}
+async function svc() {
+  const s = await api("/api/services"); canvasUrl = s.canvas_url;
+  const name = { comfyui: "ComfyUI", canvas: "画布", worker: "任务服务" };
+  $("svc").innerHTML = Object.entries(s.health).map(([k, v]) =>
+    `<span><i class="dot ${v.ok ? "ok" : v.running ? "run" : ""}"></i>${name[k]}：${v.ok ? "正常" : v.running ? "启动中…" : "未启动"}</span>`).join("");
+  return s;
+}
+async function waitCanvas() {
+  for (let i = 0; i < 240; i++) {
+    const s = await svc();
+    if (s.health.canvas.ok) { window.open(canvasUrl, "_blank"); return; }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+api("/api/network").then((n) => {
+  const t = (k, label) => `${label}：${n[k].ok ? "能连上（" + n[k].ms + "ms）" : "连不上"}`;
+  $("net").textContent = [t("huggingface", "HuggingFace 官方"), t("hf-mirror", "国内镜像"), t("github", "GitHub")].join("　");
+  if (!n.huggingface.ok && n["hf-mirror"].ok && !$("mirror").checked) { $("mirror").checked = true; saveSettings(); }
+});
+load().then(() => { poll(); });
+setInterval(svc, 4000); svc();
+</script>
+</body>
+</html>

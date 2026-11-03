@@ -1,0 +1,7 @@
+runtime/
+模型/
+data/
+输出/
+bin/uv.exe
+__pycache__/
+*.pyc
