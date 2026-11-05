@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import atexit
 import sys
 import threading
@@ -198,8 +199,8 @@ def api_log(name: str):
     return {"text": services.tail(name, 120)}
 
 
-def _auto_start(open_browser: bool = True) -> None:
-    """已经装好的话，打开就直接启动画布，等画布就绪后自动打开画布页面。"""
+def _auto_start(open_browser: bool = False) -> None:
+    """自动启动已装好的服务；仅显式指定时打开浏览器。"""
     c = system_check()
     st = paths.load(paths.STATE, {})
     if installer.comfy_ready() and st.get("packs") and c["gpu"]:
@@ -222,10 +223,17 @@ def _already_running() -> bool:
         return s.connect_ex(("127.0.0.1", paths.PORTS["setup"])) == 0
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="画布一键包（默认不打开浏览器）")
+    parser.add_argument("--browser", action="store_true", help="启动时自动打开浏览器")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    args = parse_args()
     if _already_running():
-        print("一键包已经在运行了，直接打开管理页。")
-        if "--no-browser" not in sys.argv:
+        print(f"一键包已经在运行了，管理页：http://127.0.0.1:{paths.PORTS['setup']}/")
+        if args.browser:
             webbrowser.open(f"http://127.0.0.1:{paths.PORTS['setup']}/")
         sys.exit(0)
     atexit.register(services.stop_all)
@@ -234,5 +242,5 @@ if __name__ == "__main__":
     print(f"  管理页（自检 / 下载模型）：http://127.0.0.1:{paths.PORTS['setup']}")
     print(f"  画布：                    http://127.0.0.1:{paths.PORTS['canvas']}")
     print("=" * 60)
-    threading.Thread(target=_auto_start, args=("--no-browser" not in sys.argv,), daemon=True).start()
+    threading.Thread(target=_auto_start, args=(args.browser,), daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=paths.PORTS["setup"], log_level="warning")

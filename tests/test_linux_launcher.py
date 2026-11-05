@@ -168,7 +168,11 @@ class LauncherTests(unittest.TestCase):
         finally:
             self.services.stop("integration")
 
-    def test_no_browser_still_starts_installed_services(self):
+    def test_browser_is_opt_in(self):
+        self.assertFalse(self.main.parse_args([]).browser)
+        self.assertTrue(self.main.parse_args(["--browser"]).browser)
+
+    def test_default_still_starts_installed_services(self):
         with patch.object(self.main, "system_check", return_value={"gpu": {"index": 0}, "ram_gb": 64}), \
                 patch.object(self.paths, "load", return_value={"packs": ["qwen"]}), \
                 patch.object(self.installer, "comfy_ready", return_value=True), \
@@ -176,9 +180,17 @@ class LauncherTests(unittest.TestCase):
                 patch.object(self.services, "start_all") as start, \
                 patch.object(self.services, "health", return_value={"canvas": {"ok": True}}), \
                 patch.object(self.main.webbrowser, "open") as browser:
-            self.main._auto_start(open_browser=False)
+            self.main._auto_start()
         start.assert_called_once_with(0)
         browser.assert_not_called()
+
+    def test_browser_option_opens_setup_for_new_install(self):
+        with patch.object(self.main, "system_check", return_value={}), \
+                patch.object(self.paths, "load", return_value={}), \
+                patch.object(self.installer, "comfy_ready", return_value=False), \
+                patch.object(self.main.webbrowser, "open") as browser:
+            self.main._auto_start(open_browser=True)
+        browser.assert_called_once_with(f"http://127.0.0.1:{self.paths.PORTS['setup']}/")
 
     def test_shutdown_stops_services(self):
         from fastapi.testclient import TestClient
