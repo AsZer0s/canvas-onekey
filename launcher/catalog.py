@@ -56,7 +56,7 @@ def dest_of(file_id: str) -> str:
 
 def name_of(file_id: str) -> str:
     """ComfyUI 里引用的文件名（相对于 diffusion_models / loras 等子目录）。"""
-    # Windows 上 ComfyUI 列子目录里的文件用反斜杠（qwen21_style\canon_qwen21.safetensors），要原样对上
+    # 和 ComfyUI 使用相同的系统路径分隔符（Linux 为 /）。
     return dest_of(file_id).split("/", 1)[1].replace("/", os.sep)
 
 

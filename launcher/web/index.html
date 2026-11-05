@@ -67,7 +67,7 @@ footer{color:var(--muted);font-size:13px}
       <label class="row"><input type="checkbox" id="mirror"> 使用国内镜像：模型从 hf-mirror.com 下载，Python 包从清华镜像下载</label>
       <div id="net" class="d" style="color:var(--muted);font-size:13px"></div>
       <p style="margin:10px 0 4px">已经装过 ComfyUI、手上有同名模型文件？填它的 models 文件夹，会直接链接 / 复制过来，不用重下（可不填）：</p>
-      <input type="text" id="importdir" placeholder="例如 D:\ComfyUI\models">
+      <input type="text" id="importdir" placeholder="例如 /opt/ComfyUI/models">
     </details>
     <div class="btns">
       <button class="primary" id="install">开始安装</button>
@@ -101,7 +101,7 @@ footer{color:var(--muted);font-size:13px}
     <h2>④ 导入我的参考图（可选）</h2>
     <p class="sub" style="margin-bottom:10px">把电脑里一个放参考图的文件夹（自己拍的照片、画的线稿、一张张存下来的姿势图……）变成画布里的一个画板。之后在画布节点上点「+」打开「选择素材」，左上角切到这个画板，就能按子文件夹浏览、搜索、添加。只导入你自己有权使用的图片；要先启动画布。</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <input type="text" id="refdir" placeholder="参考图文件夹，例如 D:\参考图\姿势" style="flex:1 1 320px">
+      <input type="text" id="refdir" placeholder="参考图文件夹，例如 /home/user/Pictures/poses" style="flex:1 1 320px">
       <button id="refpick">选择文件夹…</button>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -142,7 +142,7 @@ function renderHw() {
   if (g && c.family === "blackwell") notes.push("50 系显卡可以用 NVFP4 版 H3 文本编码器，省显存也更快。");
   else if (g) notes.push("这张卡不是 50 系，用不了 NVFP4，H3 文本编码器会用 int8 版（27GB，更吃内存）。");
   if (c.network) notes.push('<b>一键包放在网络共享 / NAS 上（' + c.root + '）。</b>模型有几十到上百 GB，从 NAS 读写会很慢，还可能中途出错。强烈建议把整个文件夹复制到本机硬盘（固态最好）再打开，然后再点「开始安装」。');
-  if (!c.ascii_path) notes.push("提示：一键包放在带中文的路径里（" + c.root + "）。一般没问题；如果安装报奇怪的错，把整个文件夹挪到纯英文路径（比如 D:\\canvas）再试。");
+   if (!c.ascii_path) notes.push("提示：一键包放在带中文的路径里（" + c.root + "）。一般没问题；如果安装报奇怪的错，把整个文件夹挪到纯英文路径（比如 /opt/canvas-onekey）再试。");
   $("hwnote").innerHTML = notes.map((n) => `<div class="note">${n}</div>`).join("");
 }
 function renderPacks() {

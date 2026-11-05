@@ -42,8 +42,8 @@ def file_url(fid: str) -> str:
 
 def run(cmd: list[str], what: str) -> None:
     log(what)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=paths.uv_env(), text=True,
-                         encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=paths.pip_env(), text=True,
+                         encoding="utf-8", errors="replace")
     for line in p.stdout:
         line = line.rstrip()
         if line:
@@ -56,7 +56,9 @@ def run(cmd: list[str], what: str) -> None:
 
 def comfy_ready() -> bool:
     st = paths.load(paths.STATE, {})
-    return bool(st.get("comfy", {}).get("ok")) and paths.COMFY_PY.exists() and (paths.COMFY_DIR / "main.py").exists()
+    comfy = st.get("comfy", {})
+    return (bool(comfy.get("ok")) and comfy.get("python") == str(paths.COMFY_PY)
+            and paths.COMFY_PY.exists() and (paths.COMFY_DIR / "main.py").exists())
 
 
 def install_comfy(torch_idx: str) -> None:
@@ -73,18 +75,16 @@ def install_comfy(torch_idx: str) -> None:
         os.replace(inner, paths.COMFY_DIR)
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
-    uv = str(paths.UV)
-    job["stage"] = "安装 Python 和 PyTorch"
-    if not paths.COMFY_PY.exists():
-        run([uv, "venv", str(paths.COMFY_VENV), "--python", "3.12", "--seed"], "创建 ComfyUI 的 Python 3.12 环境")
-    run([uv, "pip", "install", "--python", str(paths.COMFY_PY), "torch", "torchvision", "torchaudio",
+    pip = [str(paths.COMFY_PY), "-m", "pip", "install"]
+    job["stage"] = "安装 PyTorch（系统 Python）"
+    run([*pip, "torch", "torchvision", "torchaudio",
          "--index-url", f"https://download.pytorch.org/whl/{torch_idx}"], f"安装 PyTorch（{torch_idx}，约 3GB，要等几分钟）")
     job["stage"] = "安装 ComfyUI 依赖"
-    run([uv, "pip", "install", "--python", str(paths.COMFY_PY), "-r", str(paths.COMFY_DIR / "requirements.txt")],
+    run([*pip, "-r", str(paths.COMFY_DIR / "requirements.txt")],
         "安装 ComfyUI 依赖")
     write_extra_paths()
     st = paths.load(paths.STATE, {})
-    st["comfy"] = {"ok": True, "version": paths.COMFY_VERSION, "torch": torch_idx}
+    st["comfy"] = {"ok": True, "version": paths.COMFY_VERSION, "torch": torch_idx, "python": str(paths.COMFY_PY)}
     paths.save(paths.STATE, st)
     log("ComfyUI 装好了")
 
@@ -107,7 +107,7 @@ def ensure_gguf_node() -> None:
         os.replace(next(tmp.iterdir()), target)
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
-    run([str(paths.UV), "pip", "install", "--python", str(paths.COMFY_PY), "gguf>=0.13.0", "sentencepiece", "protobuf"],
+    run([str(paths.COMFY_PY), "-m", "pip", "install", "gguf>=0.13.0", "sentencepiece", "protobuf"],
         "安装 GGUF 依赖")
 
 

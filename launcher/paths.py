@@ -1,17 +1,15 @@
-"""一键包里所有目录都放在包自己的文件夹下，不往系统盘和用户目录写东西。"""
+"""程序、模型和数据放在项目内；Python 和依赖使用系统安装。"""
 from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-BIN = ROOT / "bin"
-UV = BIN / "uv.exe"
 RUNTIME = ROOT / "runtime"
 COMFY_DIR = RUNTIME / "ComfyUI"
-COMFY_VENV = RUNTIME / "comfy-venv"
-COMFY_PY = COMFY_VENV / "Scripts" / "python.exe"
+COMFY_PY = Path(sys.executable)
 MODELS = ROOT / "模型"
 DATA = ROOT / "data"
 ONEKEY = DATA / "onekey"
@@ -29,14 +27,13 @@ for d in (RUNTIME, MODELS, ONEKEY, OUTPUT):
     d.mkdir(parents=True, exist_ok=True)
 
 
-def uv_env() -> dict:
-    """uv 的缓存和下载的 Python 都放进包里。"""
+def pip_env() -> dict:
+    """用系统 pip 安装，缓存留在项目内，保留用户自己的 pip 配置。"""
     env = dict(os.environ)
-    env.update(UV_CACHE_DIR=str(RUNTIME / "uv-cache"), UV_PYTHON_INSTALL_DIR=str(RUNTIME / "python"),
-               UV_LINK_MODE="copy", PYTHONUTF8="1")
+    env.update(PIP_CACHE_DIR=str(RUNTIME / "pip-cache"), PYTHONUTF8="1")
     s = load(SETTINGS, {})
     if s.get("mirror"):
-        env["UV_INDEX_URL"] = "https://pypi.tuna.tsinghua.edu.cn/simple"
+        env["PIP_INDEX_URL"] = "https://pypi.tuna.tsinghua.edu.cn/simple"
     return env
 
 

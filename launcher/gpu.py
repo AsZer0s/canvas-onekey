@@ -1,7 +1,8 @@
 """显卡、内存、磁盘自检（只读，不改任何系统设置）。"""
 from __future__ import annotations
 
-import ctypes
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,13 +10,13 @@ from pathlib import Path
 
 def nvidia_gpus() -> tuple[list[dict], str]:
     """返回 (显卡列表, 出错说明)。用 nvidia-smi 读型号、显存、计算能力、驱动版本。"""
-    exe = shutil.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
-    if not Path(exe).exists() and not shutil.which("nvidia-smi"):
+    exe = shutil.which("nvidia-smi")
+    if not exe:
         return [], "没找到 nvidia-smi：这台电脑可能没有 NVIDIA 显卡，或者没装显卡驱动。"
     try:
         out = subprocess.run(
             [exe, "--query-gpu=index,name,memory.total,compute_cap,driver_version,memory.used", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True, text=True, timeout=20,
         )
     except Exception as e:  # noqa: BLE001
         return [], f"运行 nvidia-smi 失败：{e}"
@@ -36,18 +37,9 @@ def nvidia_gpus() -> tuple[list[dict], str]:
 
 
 def ram_gb() -> float:
-    class MEMORYSTATUSEX(ctypes.Structure):
-        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
     try:
-        m = MEMORYSTATUSEX()
-        m.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
-        return round(m.ullTotalPhys / 1024 ** 3, 1)
-    except Exception:  # noqa: BLE001
+        return round(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1024 ** 3, 1)
+    except (OSError, ValueError, AttributeError):
         return 0.0
 
 
@@ -59,13 +51,20 @@ def disk_free_gb(path: Path) -> float:
 
 
 def is_network_path(path: Path) -> bool:
-    """一键包在 NAS / 网络共享上（含 pushd 临时映射的盘符）时返回 True。"""
-    s = str(path)
-    if s.startswith("\\\\"):
-        return True
+    """按最长匹配的 Linux 挂载点识别 NFS / SMB / SSHFS 等网络盘。"""
+    network_fs = {"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "9p", "ceph", "glusterfs"}
+    resolved = str(path.resolve())
+    best_mount, best_fs = "", ""
     try:
-        return ctypes.windll.kernel32.GetDriveTypeW(s[:3]) == 4  # DRIVE_REMOTE
-    except Exception:  # noqa: BLE001
+        for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
+            fields = line.split()
+            if len(fields) < 3:
+                continue
+            mount = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[1])
+            if (resolved == mount or resolved.startswith(mount.rstrip("/") + "/")) and len(mount) > len(best_mount):
+                best_mount, best_fs = mount, fields[2]
+        return best_fs in network_fs
+    except OSError:
         return False
 
 

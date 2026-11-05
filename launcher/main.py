@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import webbrowser
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,7 +25,17 @@ import paths  # noqa: E402
 import refs  # noqa: E402
 import services  # noqa: E402
 
-app = FastAPI(title="画布一键包", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        # uvicorn 收到 SIGTERM 时也要停止全部子服务，不能只依赖 atexit。
+        services.stop_all()
+
+
+app = FastAPI(title="画布一键包", docs_url=None, redoc_url=None, lifespan=lifespan)
 WEB = Path(__file__).resolve().parent / "web"
 _check: dict = {}
 
@@ -83,7 +94,7 @@ def api_settings(body: dict):
     s = paths.load(paths.SETTINGS, {})
     if "mirror" in body:
         s["mirror"] = bool(body["mirror"])
-        flag = paths.ONEKEY / "mirror.flag"  # 给 启动画布.bat 看的：装画布依赖时也走清华镜像
+        flag = paths.ONEKEY / "mirror.flag"  # 给启动画布.sh 看：装画布依赖时也走清华镜像
         flag.write_text("1") if s["mirror"] else flag.unlink(missing_ok=True)
     if "import_dirs" in body:
         s["import_dirs"] = [str(x).strip() for x in body["import_dirs"] if str(x).strip()][:5]
@@ -187,7 +198,7 @@ def api_log(name: str):
     return {"text": services.tail(name, 120)}
 
 
-def _auto_start() -> None:
+def _auto_start(open_browser: bool = True) -> None:
     """已经装好的话，打开就直接启动画布，等画布就绪后自动打开画布页面。"""
     c = system_check()
     st = paths.load(paths.STATE, {})
@@ -197,10 +208,11 @@ def _auto_start() -> None:
         for _ in range(240):
             h = services.health()
             if h["canvas"]["ok"]:
-                webbrowser.open(f"http://127.0.0.1:{paths.PORTS['canvas']}/")
+                if open_browser:
+                    webbrowser.open(f"http://127.0.0.1:{paths.PORTS['canvas']}/")
                 return
             time.sleep(1)
-    else:
+    elif open_browser:
         webbrowser.open(f"http://127.0.0.1:{paths.PORTS['setup']}/")
 
 
@@ -218,10 +230,9 @@ if __name__ == "__main__":
         sys.exit(0)
     atexit.register(services.stop_all)
     print("=" * 60)
-    print("  画布一键包已启动。这个黑窗口不要关，关掉画布就停了。")
+    print("  画布一键包已启动。请保持终端运行，按 Ctrl+C 停止全部服务。")
     print(f"  管理页（自检 / 下载模型）：http://127.0.0.1:{paths.PORTS['setup']}")
     print(f"  画布：                    http://127.0.0.1:{paths.PORTS['canvas']}")
     print("=" * 60)
-    if "--no-browser" not in sys.argv:
-        threading.Thread(target=_auto_start, daemon=True).start()
+    threading.Thread(target=_auto_start, args=("--no-browser" not in sys.argv,), daemon=True).start()
     uvicorn.run(app, host="127.0.0.1", port=paths.PORTS["setup"], log_level="warning")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -13,17 +14,17 @@ import paths
 procs: dict[str, subprocess.Popen] = {}
 LOGS = paths.ONEKEY / "logs"
 LOGS.mkdir(parents=True, exist_ok=True)
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _spawn(name: str, cmd: list[str], cwd, env: dict) -> None:
     old = procs.get(name)
     if old and old.poll() is None:
         return
-    log = open(LOGS / f"{name}.log", "a", encoding="utf-8", errors="replace")
-    log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 启动 {name} =====\n")
-    log.flush()
-    procs[name] = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=log, stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+    with open(LOGS / f"{name}.log", "a", encoding="utf-8", errors="replace") as log:
+        log.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 启动 {name} =====\n")
+        log.flush()
+        procs[name] = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=log,
+                                       stderr=subprocess.STDOUT, start_new_session=True)
 
 
 def canvas_env() -> dict:
@@ -62,8 +63,23 @@ def restart_canvas() -> None:
 
 def stop(name: str) -> None:
     p = procs.pop(name, None)
-    if p and p.poll() is None:
-        subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
+    if not p:
+        return
+    # 每个服务都是独立进程组，连同 ComfyUI 启动的子进程一起停止。
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        p.wait()
+        return
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    p.wait()
 
 
 def stop_all() -> None:
