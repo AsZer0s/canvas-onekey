@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import signal
 import subprocess
@@ -86,6 +87,16 @@ class LauncherTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def setUp(self):
+        import comfy_detect
+        comfy_detect._cache.clear()
+        self.addCleanup(comfy_detect._cache.clear)
+        # 不探测测试宿主机真实的 ComfyUI 或其他本机服务。
+        for name, value in (("probe", {}), ("process_installs", []), ("common_installs", []), ("port_open", False)):
+            mocker = patch.object(comfy_detect, name, return_value=value)
+            mocker.start()
+            self.addCleanup(mocker.stop)
+
     def test_system_interpreter(self):
         self.assertEqual(self.paths.COMFY_PY, Path(sys.executable))
 
@@ -103,7 +114,7 @@ class LauncherTests(unittest.TestCase):
     def test_comfy_install_uses_system_pip(self):
         self.paths.COMFY_DIR.mkdir(exist_ok=True)
         (self.paths.COMFY_DIR / "main.py").touch()
-        with patch.object(self.installer, "run") as run:
+        with patch.object(self.installer, "python_has", return_value=False), patch.object(self.installer, "run") as run:
             self.installer.install_comfy("cu128")
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(len(commands), 2)
@@ -121,7 +132,7 @@ class LauncherTests(unittest.TestCase):
         target = self.paths.COMFY_DIR / "custom_nodes" / "ComfyUI-GGUF"
         target.mkdir(parents=True, exist_ok=True)
         (target / "nodes.py").touch()
-        with patch.object(self.installer, "run") as run:
+        with patch.object(self.installer, "python_has", return_value=False), patch.object(self.installer, "run") as run:
             self.installer.ensure_gguf_node()
         self.assertEqual(run.call_args.args[0][:4], [str(self.paths.COMFY_PY), "-m", "pip", "install"])
 
@@ -173,7 +184,10 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(self.main.parse_args(["--browser"]).browser)
 
     def test_default_still_starts_installed_services(self):
-        with patch.object(self.main, "system_check", return_value={"gpu": {"index": 0}, "ram_gb": 64}), \
+        import comfy_detect
+        with patch.object(comfy_detect, "select", return_value={"running": False, "directory_known": True}), \
+                patch.object(comfy_detect, "audit", return_value={"running": False}), \
+                patch.object(self.main, "system_check", return_value={"gpu": {"index": 0}, "ram_gb": 64}), \
                 patch.object(self.paths, "load", return_value={"packs": ["qwen"]}), \
                 patch.object(self.installer, "comfy_ready", return_value=True), \
                 patch.object(self.installer, "write_installed"), \
@@ -211,6 +225,248 @@ class LauncherTests(unittest.TestCase):
                 self.assertIsNone(check["gpu"])
                 self.assertEqual(check["ram_gb"], 32)
                 self.assertEqual(client.post("/api/install", json={"packs": []}).status_code, 400)
+
+    def test_comfy_url_rejects_remote_and_credentials(self):
+        for url in ("https://127.0.0.1:8188", "http://example.com:8188", "http://user:pass@localhost:8188",
+                    "http://127.0.0.1:8188/path", "http://127.0.0.1:8188?x=1"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                self.paths.validate_comfy_url(url)
+        self.assertEqual(self.paths.validate_comfy_url("http://localhost:8190/"), "http://127.0.0.1:8190")
+
+    def test_discover_running_instance_custom_port(self):
+        import comfy_detect
+        root = self.root / "existing-running"
+        process = {"directory": str(root), "url": "http://127.0.0.1:8199", "pid": 123}
+        with patch.object(comfy_detect, "process_installs", return_value=[process]), \
+                patch.object(comfy_detect, "probe", side_effect=lambda url: {"nodes": {"KSampler": {}}} if url == process["url"] else {}), \
+                patch.object(self.paths, "load", return_value={}):
+            result = comfy_detect.discover(force=True)
+        self.assertTrue(result["running"])
+        self.assertEqual(result["directory"], str(root))
+        self.assertEqual(result["url"], process["url"])
+
+    def test_discover_stopped_existing_install(self):
+        import comfy_detect
+        root = self.root / "existing-stopped"
+        with patch.object(comfy_detect, "common_installs", return_value=[root]), \
+                patch.object(self.paths, "load", return_value={}):
+            result = comfy_detect.discover(force=True)
+        self.assertEqual(result["directory"], str(root))
+        self.assertFalse(result["running"])
+
+    def test_explicit_directory_mismatch(self):
+        import comfy_detect
+        root = self.root / "other-comfy"
+        process = {"directory": str(root), "url": self.paths.comfy_url(), "pid": 123}
+        with patch.object(comfy_detect, "process_installs", return_value=[process]), \
+                patch.object(comfy_detect, "probe", return_value={"nodes": {"KSampler": {}}}), \
+                patch.object(self.paths, "load", return_value={"comfy_dir": str(self.root / "chosen")}):
+            self.assertTrue(comfy_detect.discover(force=True)["mismatch"])
+            with self.assertRaises(ValueError):
+                comfy_detect.select()
+
+    def test_external_instance_does_not_install_pytorch(self):
+        import comfy_detect
+        with patch.object(comfy_detect, "discover", return_value={"running": True}), \
+                patch.object(self.installer, "run") as run:
+            self.installer.install_comfy("cu130")
+        run.assert_not_called()
+
+    def test_loaded_gguf_plugin_is_not_reinstalled(self):
+        import comfy_detect
+        with patch.object(comfy_detect, "discover", return_value={"runtime": {"nodes": {"UnetLoaderGGUF": {}}}}), \
+                patch.object(self.installer, "run") as run:
+            self.installer.ensure_gguf_node()
+        run.assert_not_called()
+
+    def test_install_packs_only_downloads_missing_models(self):
+        gpu_info = {"cc": 12.0, "vram_gb": 24}
+        with patch.object(self.installer, "file_done", side_effect=lambda fid: fid != "qwen_vae"), \
+                patch.object(self.installer, "download") as download, \
+                patch.object(self.installer, "expose_model") as expose, \
+                patch.object(self.installer, "write_installed"), \
+                patch.object(self.paths, "load", return_value={}), \
+                patch.object(self.paths, "save"):
+            self.installer.install_packs(["qwen"], gpu_info, 64, [])
+        download.assert_called_once()
+        self.assertIn("qwen_image_2.1_vae_bf16.safetensors", download.call_args.args[0])
+        self.assertEqual(expose.call_count, 3)
+
+    def test_stop_all_never_stops_unowned_comfy(self):
+        self.assertNotIn("comfyui", self.services.procs)
+        with patch.object(self.services, "stop") as stop:
+            self.services.stop_all()
+        stop.assert_not_called()
+
+    def test_api_model_reuse_and_ambiguous_names(self):
+        import comfy_detect
+        import catalog
+        filename = Path(catalog.dest_of("lora_canon")).name
+        def nodes(names):
+            return {"LoraLoaderModelOnly": {"input": {"required": {"lora_name": [names]}}}}
+        self.assertEqual(comfy_detect.api_model("lora_canon", nodes(["custom/" + filename])), "custom/" + filename)
+        self.assertIsNone(comfy_detect.api_model("lora_canon", nodes(["a/" + filename, "b/" + filename])))
+        with patch.object(comfy_detect, "discover", return_value={"runtime": {"nodes": nodes(["custom/" + filename])}}):
+            self.assertEqual(self.installer.model_name("lora_canon"), "custom/" + filename)
+            self.assertTrue(self.installer.file_done("lora_canon"))
+
+    def test_local_models_and_extra_model_paths_are_reused(self):
+        import comfy_detect
+        import catalog
+        root = self.root / "with-models"
+        root.mkdir(exist_ok=True)
+        shared = self.root / "shared-models"
+        shared.mkdir(exist_ok=True)
+        model = shared / "canon_qwen21.safetensors"
+        model.write_bytes(b"1234")
+        (root / "extra_model_paths.yaml").write_text(
+            "shared:\n  base_path: '" + shared.as_posix() + "'\n  loras: .\n", encoding="utf-8")
+        fake = {**catalog.FILES["lora_canon"], "size": 4}
+        with patch.dict(catalog.FILES, {"lora_canon": fake}):
+            self.assertEqual(comfy_detect.local_model("lora_canon", root), model)
+
+    def test_workflow_templates_cover_all_model_variants(self):
+        import workflows
+        for vram in (12, 16, 24, 48):
+            gpu_info = {"cc": 12.0, "vram_gb": vram}
+            ids = ["qwen", "qwen_fine", "canon", "film", "moss", "h3_fl", "h3_ref"]
+            with self.subTest(vram=vram):
+                inst = workflows.expected_install(ids, gpu_info, 64)
+                templates = workflows.templates(inst)
+                self.assertIn("qwen-canon", templates)
+                self.assertIn("h3-ref2va-turbo", templates)
+                nodes = workflows.required_nodes(inst)
+                self.assertIn("MiniMaxH3ReferenceToVideo", nodes)
+                self.assertEqual("UnetLoaderGGUF" in nodes, vram < 24)
+
+    def test_workflows_only_fill_missing_files(self):
+        import workflows
+        inst = workflows.expected_install(["qwen"], {"cc": 12.0, "vram_gb": 24}, 64)
+        root = self.root / "workflow-export"
+        written = workflows.export(inst, root)
+        self.assertTrue(written)
+        sample = Path(written[0])
+        sample.write_text('{"user_edited": true}', encoding="utf-8")
+        self.assertEqual(workflows.export(inst, root), [])
+        self.assertEqual(json.loads(sample.read_text(encoding="utf-8")), {"user_edited": True})
+        other = Path(written[1])
+        other.unlink()
+        self.assertEqual(workflows.export(inst, root), [str(other)])
+
+    def test_audit_reports_missing_nodes_models_workflows(self):
+        import comfy_detect
+        detected = {"directory": str(self.root / "audit-empty"), "url": self.paths.comfy_url(),
+                    "running": True, "runtime": {"nodes": {"KSampler": {}}}}
+        with patch.object(comfy_detect, "discover", return_value=detected):
+            result = comfy_detect.audit(["qwen", "h3_fl"], {"cc": 12.0, "vram_gb": 16}, 64)
+        self.assertIn("TextEncodeQwenImage21", result["missing_nodes"])
+        self.assertIn("UnetLoaderGGUF", result["missing_nodes"])
+        self.assertNotIn("UnetLoaderGGUF", result["core_missing"])
+        self.assertTrue(result["plugin"]["required"])
+        self.assertTrue(any(not model["present"] for model in result["models"]))
+        self.assertTrue(all(not w["present"] for w in result["workflows"]))
+
+    def test_start_reuses_external_process_without_spawning_comfy(self):
+        import comfy_detect
+        with patch.object(comfy_detect, "select", return_value={"running": True}), \
+                patch.object(self.services, "_spawn") as spawn:
+            self.services.start_all(0)
+        self.assertEqual([call.args[0] for call in spawn.call_args_list], ["worker", "canvas"])
+
+    def test_occupied_comfy_port_prevents_duplicate_start(self):
+        import comfy_detect
+        with patch.object(comfy_detect, "select", return_value={"running": False}), \
+                patch.object(comfy_detect, "port_open", return_value=True), \
+                patch.object(self.services, "_spawn") as spawn:
+            with self.assertRaises(RuntimeError):
+                self.services.start_all(0)
+        spawn.assert_not_called()
+
+    def test_health_identifies_external_comfy(self):
+        response = Mock(is_success=True)
+        response.json.return_value = {"system": {"comfyui_version": "0.43.2"}}
+        with patch.object(self.services.httpx, "get", return_value=response):
+            result = self.services.health()["comfyui"]
+        self.assertTrue(result["running"])
+        self.assertTrue(result["external"])
+
+    def test_existing_conflicting_model_is_never_overwritten(self):
+        import catalog
+        fid = "lora_film"
+        src = self.installer.model_path(fid)
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"source")
+        target = self.paths.comfy_dir() / "models" / catalog.dest_of(fid)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"original user model")
+        with self.assertRaises(RuntimeError):
+            self.installer.expose_model(fid)
+        self.assertEqual(target.read_bytes(), b"original user model")
+
+    def test_existing_cuda_torch_is_preserved(self):
+        self.paths.COMFY_DIR.mkdir(exist_ok=True)
+        (self.paths.COMFY_DIR / "main.py").touch()
+        with patch.object(self.installer, "python_has", return_value=True), \
+                patch.object(self.installer, "run") as run:
+            self.installer.install_comfy("cu130")
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(len(commands), 1)
+        self.assertIn("-r", commands[0])
+        self.assertNotIn("torch", commands[0])
+
+    def test_probe_uses_comfy_api_not_arbitrary_http_response(self):
+        import httpx
+        def handler(request):
+            if request.url.path == "/system_stats":
+                return httpx.Response(200, json={"system": {"comfyui_version": "0.43.2"}})
+            return httpx.Response(200, json={"KSampler": {}, "SaveImage": {}})
+        transport = httpx.MockTransport(handler)
+        original = httpx.Client
+        # 暂时取消 setUp 中的只读 probe mock，用真实实现测试 HTTP 解析。
+        spec = importlib.util.spec_from_file_location("probe_test", ROOT / "launcher" / "comfy_detect.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=transport, **kw)):
+            result = module.probe("http://127.0.0.1:8188")
+        self.assertIn("SaveImage", result["nodes"])
+        invalid = httpx.MockTransport(lambda request: httpx.Response(200, json={"status": "ok"}))
+        with patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=invalid, **kw)):
+            self.assertEqual(module.probe("http://127.0.0.1:8188"), {})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "需要 Linux 符号链接和 /proc 支持")
+    def test_detect_real_running_comfy_commandline(self):
+        import comfy_detect
+        root = self.root / "proc-comfy"
+        root.mkdir(exist_ok=True)
+        (root / "folder_paths.py").touch()
+        (root / "main.py").write_text("import time; time.sleep(60)", encoding="utf-8")
+        proc = subprocess.Popen([sys.executable, "main.py", "--port", "8199"], cwd=root)
+        try:
+            spec = importlib.util.spec_from_file_location("proc_test", ROOT / "launcher" / "comfy_detect.py")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            result = module.process_installs()
+            selected = next(p for p in result if p["pid"] == proc.pid)
+            self.assertEqual(selected["directory"], str(root))
+            self.assertEqual(selected["url"], "http://127.0.0.1:8199")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "需要 Linux 符号链接支持")
+    def test_downloaded_model_is_linked_without_copying(self):
+        import catalog
+        fid = "lora_fix"
+        src = self.installer.model_path(fid)
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"model")
+        self.installer.expose_model(fid)
+        dst = self.paths.comfy_dir() / "models" / catalog.dest_of(fid)
+        self.assertTrue(dst.is_symlink())
+        self.assertEqual(dst.resolve(), src.resolve())
+        # 多次补齐不重复复制、不覆盖链接。
+        with patch.dict(catalog.FILES, {fid: {**catalog.FILES[fid], "size": 5}}):
+            self.installer.expose_model(fid)
 
 
 if __name__ == "__main__":

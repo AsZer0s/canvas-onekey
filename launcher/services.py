@@ -10,6 +10,7 @@ import time
 import httpx
 
 import paths
+import comfy_detect
 
 procs: dict[str, subprocess.Popen] = {}
 LOGS = paths.ONEKEY / "logs"
@@ -35,6 +36,9 @@ def canvas_env() -> dict:
 
 
 def start_all(gpu_index: int | None) -> None:
+    detected = comfy_detect.select()
+    if not detected["running"] and comfy_detect.port_open(paths.comfy_url()):
+        raise RuntimeError("ComfyUI 端口已被其他程序占用，或实例尚未启动完成；不会重复启动")
     env = dict(os.environ)
     env.update(PYTHONUTF8="1", CUDA_DEVICE_ORDER="PCI_BUS_ID")
     if gpu_index is not None:
@@ -45,11 +49,14 @@ def start_all(gpu_index: int | None) -> None:
     reserve = paths.load(paths.SETTINGS, {}).get("reserve_vram")
     if reserve:
         extra = ["--reserve-vram", str(float(reserve))]
-    _spawn("comfyui", [str(paths.COMFY_PY), "main.py", "--listen", "127.0.0.1", "--port", str(paths.PORTS["comfy"]),
-                       "--extra-model-paths-config", str(paths.RUNTIME / "extra_model_paths.yaml"),
-                       "--output-directory", str(paths.OUTPUT / "comfyui"),
-                       "--input-directory", str(paths.RUNTIME / "comfy-input"),
-                       "--disable-auto-launch", *extra], paths.COMFY_DIR, env)
+    if not detected["running"]:
+        from urllib.parse import urlsplit
+        url = urlsplit(paths.comfy_url())
+        _spawn("comfyui", [str(paths.COMFY_PY), "main.py", "--listen", url.hostname, "--port", str(url.port),
+                           "--extra-model-paths-config", str(paths.RUNTIME / "extra_model_paths.yaml"),
+                           "--output-directory", str(paths.OUTPUT / "comfyui"),
+                           "--input-directory", str(paths.RUNTIME / "comfy-input"),
+                           "--disable-auto-launch", *extra], paths.comfy_dir(), env)
     py = sys.executable
     _spawn("worker", [py, "onekey/serve_local.py", "worker"], paths.CANVAS, canvas_env())
     _spawn("canvas", [py, "onekey/serve_local.py"], paths.CANVAS, canvas_env())
@@ -89,18 +96,22 @@ def stop_all() -> None:
 
 def health() -> dict:
     out = {}
-    for name, url in (("comfyui", f"http://127.0.0.1:{paths.PORTS['comfy']}/system_stats"),
+    for name, url in (("comfyui", paths.comfy_url() + "/system_stats"),
                       ("canvas", f"http://127.0.0.1:{paths.PORTS['canvas']}/"),
                       ("worker", f"http://127.0.0.1:{paths.PORTS['worker']}/api/health")):
         p = procs.get(name)
         running = bool(p and p.poll() is None)
         ok = False
-        if running:
+        if running or name == "comfyui":
             try:
-                ok = httpx.get(url, timeout=2, trust_env=False).status_code < 500
-            except httpx.HTTPError:
+                response = httpx.get(url, timeout=2, trust_env=False)
+                ok = response.is_success
+                if name == "comfyui":
+                    ok = ok and isinstance(response.json(), dict) and "system" in response.json()
+            except (httpx.HTTPError, ValueError):
                 ok = False
-        out[name] = {"running": running, "ok": ok}
+        out[name] = {"running": running or (name == "comfyui" and ok), "ok": ok,
+                     "external": name == "comfyui" and ok and not running}
     return out
 
 

@@ -6,3 +6,4 @@ python-multipart>=0.0.9
 aiofiles>=23.2.1
 qrcode[pil]>=7.4.2
 imageio-ffmpeg>=0.5.1
+PyYAML>=6.0

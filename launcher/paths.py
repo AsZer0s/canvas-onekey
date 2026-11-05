@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / "runtime"
@@ -25,6 +26,29 @@ PORTS = {"setup": 10020, "canvas": 10027, "worker": 8089, "comfy": 8188}
 
 for d in (RUNTIME, MODELS, ONEKEY, OUTPUT):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def comfy_dir() -> Path:
+    value = load(SETTINGS, {}).get("comfy_dir") or os.environ.get("COMFYUI_DIR")
+    return Path(value).expanduser().resolve() if value else COMFY_DIR
+
+
+def comfy_url() -> str:
+    value = load(SETTINGS, {}).get("comfy_url") or os.environ.get("COMFYUI_URL") or f"http://127.0.0.1:{PORTS['comfy']}"
+    return validate_comfy_url(value)
+
+
+def validate_comfy_url(value: str) -> str:
+    """只接入本机 HTTP 实例，不允许凭据、路径、跳转或任意远程服务。"""
+    u = urlsplit(value)
+    if (u.scheme != "http" or u.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or u.username or u.password or u.path not in {"", "/"} or u.query or u.fragment):
+        raise ValueError("ComfyUI 地址必须是本机 HTTP 地址，例如 http://127.0.0.1:8188")
+    port = u.port or 80
+    if u.port is not None and not 1 <= u.port <= 65535:
+        raise ValueError("ComfyUI 端口必须在 1～65535 之间")
+    host = "[::1]" if u.hostname == "::1" else "127.0.0.1"
+    return f"http://{host}:{port}"
 
 
 def pip_env() -> dict:

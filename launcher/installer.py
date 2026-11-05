@@ -12,7 +12,9 @@ from pathlib import Path
 import httpx
 
 import catalog
+import comfy_detect
 import paths
+import workflows
 from downloader import Progress, download
 
 progress = Progress()
@@ -55,15 +57,33 @@ def run(cmd: list[str], what: str) -> None:
 # ———————— ComfyUI ————————
 
 def comfy_ready() -> bool:
+    detected = comfy_detect.discover()
+    if detected["running"]:
+        return True
     st = paths.load(paths.STATE, {})
     comfy = st.get("comfy", {})
     return (bool(comfy.get("ok")) and comfy.get("python") == str(paths.COMFY_PY)
-            and paths.COMFY_PY.exists() and (paths.COMFY_DIR / "main.py").exists())
+            and comfy.get("directory", str(paths.COMFY_DIR)) == str(paths.comfy_dir())
+            and paths.COMFY_PY.exists() and (paths.comfy_dir() / "main.py").exists())
+
+
+def python_has(code: str) -> bool:
+    try:
+        return subprocess.run([str(paths.COMFY_PY), "-c", code], env=paths.pip_env(),
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def install_comfy(torch_idx: str) -> None:
+    root = paths.comfy_dir()
+    if comfy_detect.discover()["running"]:
+        log("复用正在运行的 ComfyUI，不重复安装其 Python / PyTorch")
+        return
     job["stage"] = "下载 ComfyUI"
-    if not (paths.COMFY_DIR / "main.py").exists():
+    if not (root / "main.py").exists():
+        if root != paths.COMFY_DIR:
+            raise RuntimeError("指定的 ComfyUI 目录无效，不会覆盖该目录；请修正路径")
         log(f"下载 ComfyUI {paths.COMFY_VERSION}")
         zpath = paths.RUNTIME / f"ComfyUI-{paths.COMFY_VERSION}.zip"
         download(paths.COMFY_ZIP, zpath, progress, "ComfyUI 程序")
@@ -72,19 +92,23 @@ def install_comfy(torch_idx: str) -> None:
         with zipfile.ZipFile(zpath) as z:
             z.extractall(tmp)
         inner = next(tmp.iterdir())
-        os.replace(inner, paths.COMFY_DIR)
+        os.replace(inner, root)
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
     pip = [str(paths.COMFY_PY), "-m", "pip", "install"]
     job["stage"] = "安装 PyTorch（系统 Python）"
-    run([*pip, "torch", "torchvision", "torchaudio",
-         "--index-url", f"https://download.pytorch.org/whl/{torch_idx}"], f"安装 PyTorch（{torch_idx}，约 3GB，要等几分钟）")
+    if python_has("import torch, torchvision, torchaudio; assert torch.version.cuda is not None"):
+        log("系统 Python 已有 CUDA PyTorch，保留现有版本")
+    else:
+        run([*pip, "torch", "torchvision", "torchaudio",
+             "--index-url", f"https://download.pytorch.org/whl/{torch_idx}"], f"安装 PyTorch（{torch_idx}，约 3GB，要等几分钟）")
     job["stage"] = "安装 ComfyUI 依赖"
-    run([*pip, "-r", str(paths.COMFY_DIR / "requirements.txt")],
+    run([*pip, "-r", str(root / "requirements.txt")],
         "安装 ComfyUI 依赖")
     write_extra_paths()
     st = paths.load(paths.STATE, {})
-    st["comfy"] = {"ok": True, "version": paths.COMFY_VERSION, "torch": torch_idx, "python": str(paths.COMFY_PY)}
+    st["comfy"] = {"ok": True, "version": paths.COMFY_VERSION, "torch": torch_idx,
+                   "python": str(paths.COMFY_PY), "directory": str(root)}
     paths.save(paths.STATE, st)
     log("ComfyUI 装好了")
 
@@ -94,8 +118,17 @@ GGUF_NODE = "https://github.com/city96/ComfyUI-GGUF/archive/6ea2651e7df66d7585f6
 
 def ensure_gguf_node() -> None:
     """GGUF 压缩版 H3 要 ComfyUI-GGUF 插件（city96，固定版本）。只在装了 GGUF 档时才装。"""
-    target = paths.COMFY_DIR / "custom_nodes" / "ComfyUI-GGUF"
+    detected = comfy_detect.discover()
+    if "UnetLoaderGGUF" in detected["runtime"].get("nodes", {}):
+        log("运行中的 ComfyUI 已加载 GGUF 插件，跳过安装")
+        return
+    root = paths.comfy_dir()
+    if not (root / "main.py").exists():
+        raise RuntimeError("找不到 ComfyUI 安装目录，无法补装 GGUF 插件；请先设置目录")
+    target = root / "custom_nodes" / "ComfyUI-GGUF"
     if not (target / "nodes.py").exists():
+        if target.exists():
+            raise RuntimeError("已有 ComfyUI-GGUF 目录不完整，请自行检查；不会覆盖现有插件")
         log("安装 ComfyUI-GGUF 插件（GGUF 压缩版 H3 要用）")
         zpath = paths.RUNTIME / "ComfyUI-GGUF.zip"
         download(GGUF_NODE, zpath, progress, "ComfyUI-GGUF 插件")
@@ -107,8 +140,10 @@ def ensure_gguf_node() -> None:
         os.replace(next(tmp.iterdir()), target)
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
-    run([str(paths.COMFY_PY), "-m", "pip", "install", "gguf>=0.13.0", "sentencepiece", "protobuf"],
-        "安装 GGUF 依赖")
+    if not python_has("import gguf, sentencepiece, google.protobuf; from importlib.metadata import version; "
+                      "assert tuple(map(int, version('gguf').split('.')[:2])) >= (0, 13)"):
+        run([str(paths.COMFY_PY), "-m", "pip", "install", "gguf>=0.13.0", "sentencepiece", "protobuf"],
+            "安装 GGUF 依赖")
 
 
 def write_extra_paths() -> None:
@@ -127,7 +162,45 @@ def model_path(fid: str) -> Path:
 
 def file_done(fid: str) -> bool:
     p = model_path(fid)
-    return p.exists() and abs(p.stat().st_size - catalog.FILES[fid]["size"]) < max(0.02 * catalog.FILES[fid]["size"], 5e6)
+    if p.exists() and abs(p.stat().st_size - catalog.FILES[fid]["size"]) < max(0.02 * catalog.FILES[fid]["size"], 5e6):
+        return True
+    detected = comfy_detect.discover()
+    return bool(comfy_detect.api_model(fid, detected["runtime"].get("nodes", {}))
+                or comfy_detect.local_model(fid, Path(detected["directory"])))
+
+
+def model_name(fid: str) -> str:
+    detected = comfy_detect.discover()
+    api_name = comfy_detect.api_model(fid, detected["runtime"].get("nodes", {}))
+    if api_name:
+        return api_name
+    root = Path(detected["directory"])
+    local = comfy_detect.local_model(fid, root)
+    kind = catalog.dest_of(fid).split("/", 1)[0]
+    if local:
+        for category, folder in comfy_detect.model_roots(root):
+            base = folder if category == kind else folder / kind if not category else None
+            if base and local.is_relative_to(base):
+                return str(local.relative_to(base))
+            if not category and kind == "text_encoders" and local.is_relative_to(folder / "clip"):
+                return str(local.relative_to(folder / "clip"))
+    return catalog.name_of(fid)
+
+
+def expose_model(fid: str) -> None:
+    """已有实例不读取本项目的 extra paths 时，用不覆盖的单文件链接补齐。"""
+    src = model_path(fid)
+    if not src.is_file():
+        return
+    dst = paths.comfy_dir() / "models" / catalog.dest_of(fid)
+    if dst.exists():
+        if abs(dst.stat().st_size - catalog.FILES[fid]["size"]) >= max(0.02 * catalog.FILES[fid]["size"], 5e6):
+            raise RuntimeError(f"已有同名模型大小不符，不会覆盖：{dst}")
+        return
+    if dst.is_symlink():
+        raise RuntimeError(f"已有失效模型链接，不会覆盖：{dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.symlink_to(src.resolve())
 
 
 def import_existing(fid: str, folders: list[str]) -> bool:
@@ -169,14 +242,17 @@ def install_packs(pack_ids: list[str], gpu: dict, ram: float, import_dirs: list[
             raise RuntimeError("已暂停")
         name = Path(catalog.dest_of(fid)).name
         if file_done(fid):
+            expose_model(fid)
             progress.set(name, state="done", done=catalog.FILES[fid]["size"], total=catalog.FILES[fid]["size"], speed=0)
             continue
         if import_dirs and import_existing(fid, import_dirs):
+            expose_model(fid)
             continue
         log(f"下载 {name}（约 {catalog.FILES[fid]['size'] / 1e9:.2f}GB）")
         download(file_url(fid), model_path(fid), progress, name, stop=job["stop"])
         if job["stop"].is_set():
             raise RuntimeError("已暂停，下次点「开始安装」会接着下")
+        expose_model(fid)
     st = paths.load(paths.STATE, {})
     st["packs"] = sorted(set(st.get("packs", [])) | set(pack_ids))
     st["gpu"] = gpu
@@ -190,12 +266,12 @@ def write_installed(gpu: dict, ram: float) -> None:
     st = paths.load(paths.STATE, {})
     have = set(st.get("packs", []))
     packs = {p["id"]: p for p in catalog.packs_for(gpu, ram)}
-    n = catalog.name_of
+    n = model_name
 
     def pick(pid, prefix):
         return next((f for f in packs.get(pid, {}).get("files", []) if f.startswith(prefix) and file_done(f)), None)
 
-    out: dict = {"comfy": f"http://127.0.0.1:{paths.PORTS['comfy']}"}
+    out: dict = {"comfy": paths.comfy_url()}
     if "qwen" in have and pick("qwen", "qwen_turbo"):
         base_ok = file_done("qwen_base")
         out["qwen"] = {"turbo": n("qwen_turbo"), "base": n("qwen_base") if base_ok else None,
@@ -221,6 +297,9 @@ def write_installed(gpu: dict, ram: float) -> None:
     if h3.get("fl2va") or h3.get("ref2va"):
         out["h3"] = h3
     paths.save(paths.INSTALLED, out)
+    if (paths.comfy_dir() / "main.py").exists():
+        for filename in workflows.export(out, paths.comfy_dir()):
+            log("补充 API 工作流：" + filename)
 
 
 def start_job(fn, *args) -> bool:

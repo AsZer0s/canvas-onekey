@@ -1,4 +1,4 @@
-"""一键包启动器：自检显卡 → 推荐并下载模型 → 启动画布，自动打开浏览器。
+"""一键包启动器：自检显卡 / 已有 ComfyUI → 补齐依赖 → 启动画布。
 
 管理页 http://127.0.0.1:10020 ，画布 http://127.0.0.1:10027 。都只在本机能打开。
 """
@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 
 import catalog  # noqa: E402
+import comfy_detect  # noqa: E402
 import gpu as gpucheck  # noqa: E402
 import installer  # noqa: E402
 import paths  # noqa: E402
@@ -80,7 +81,9 @@ def index():
 @app.get("/api/check")
 def api_check(force: bool = False):
     c = system_check(force)
+    detected = comfy_detect.discover(force)
     return {**c, "packs": pack_view(), "comfy_ready": installer.comfy_ready(),
+            "comfy": {k: v for k, v in detected.items() if k != "runtime"},
             "services_running": services.health()["comfyui"]["running"],
             "settings": paths.load(paths.SETTINGS, {}), "state": paths.load(paths.STATE, {})}
 
@@ -92,7 +95,21 @@ def api_network():
 
 @app.post("/api/settings")
 def api_settings(body: dict):
+    if installer.job["running"]:
+        raise HTTPException(409, "正在安装或导入，暂时不能修改设置")
     s = paths.load(paths.SETTINGS, {})
+    if "comfy_dir" in body or "comfy_url" in body:
+        if any(p.poll() is None for p in services.procs.values()):
+            raise HTTPException(409, "请先停止本启动器管理的服务，再更换 ComfyUI 设置")
+        directory = str(body.get("comfy_dir", s.get("comfy_dir", ""))).strip()
+        if directory and not comfy_detect.valid_install(Path(directory).expanduser()):
+            raise HTTPException(400, "目录中没有 ComfyUI main.py / folder_paths.py")
+        try:
+            url = str(body.get("comfy_url", s.get("comfy_url", ""))).strip()
+            s["comfy_url"] = paths.validate_comfy_url(url) if url else ""
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        s["comfy_dir"] = str(Path(directory).expanduser().resolve()) if directory else ""
     if "mirror" in body:
         s["mirror"] = bool(body["mirror"])
         flag = paths.ONEKEY / "mirror.flag"  # 给启动画布.sh 看：装画布依赖时也走清华镜像
@@ -103,16 +120,37 @@ def api_settings(body: dict):
     return s
 
 
+@app.get("/api/comfy/audit")
+def api_comfy_audit(packs: str = "", force: bool = False):
+    c = system_check()
+    ids = [p for p in packs.split(",") if p] if packs else paths.load(paths.STATE, {}).get("packs", [])
+    return comfy_detect.audit(ids, c["gpu"], c["ram_gb"], force)
+
+
 def _install(pack_ids: list[str]) -> None:
     c = system_check()
+    detected = comfy_detect.select()
     if not c["torch"]:
         raise RuntimeError(c["torch_note"] or "显卡驱动不满足要求")
+    if not detected["running"] and comfy_detect.port_open(detected["url"]):
+        raise RuntimeError("ComfyUI 端口被占用或实例未就绪，请确认地址后再安装")
     if not installer.comfy_ready():
         installer.install_comfy(c["torch"])
-    if pack_ids:
-        installer.install_packs(pack_ids, c["gpu"], c["ram_gb"], paths.load(paths.SETTINGS, {}).get("import_dirs", []))
+    if detected["running"] and (not detected["existing"] or not detected["directory_known"]):
+        raise RuntimeError("已发现运行中的 ComfyUI，但无法确定安装目录；请填写 ComfyUI 目录以补装插件、模型和工作流")
+    # 已登记的功能也要一并复检，补齐被误删的模型 / 插件 / 工作流。
+    repair_ids = list(dict.fromkeys(pack_ids + paths.load(paths.STATE, {}).get("packs", [])))
+    enabled = {p["id"] for p in catalog.packs_for(c["gpu"], c["ram_gb"]) if p["enabled"]}
+    repair_ids = [pid for pid in repair_ids if pid in enabled]
+    if repair_ids:
+        installer.install_packs(repair_ids, c["gpu"], c["ram_gb"], paths.load(paths.SETTINGS, {}).get("import_dirs", []))
     else:
         installer.write_installed(c["gpu"], c["ram_gb"])
+    audit = comfy_detect.audit(repair_ids, c["gpu"], c["ram_gb"], force=True)
+    if audit["core_missing"]:
+        installer.log("当前 ComfyUI 缺少内置节点：" + "、".join(audit["core_missing"]) + "；请自行升级 ComfyUI 后重启，不会覆盖原安装")
+    if audit["running"] and (audit["missing_nodes"] or any(not m["visible"] for m in audit["models"])):
+        installer.log("补装完成；请手动重启已有 ComfyUI，再点「重新检测」确认节点和模型已加载")
     if any(services.health()[k]["running"] for k in ("canvas",)):
         services.restart_canvas()
 
@@ -127,7 +165,9 @@ def api_install(body: dict):
     bad = [x for x in ids if x not in allowed]
     if bad:
         raise HTTPException(400, "这张显卡不能装：" + "、".join(bad))
-    need = catalog.total_size([f for p in pack_view() if p["id"] in ids for f in p["files"] if not installer.file_done(f)]) / 1024 ** 3
+    repair_ids = set(ids) | set(paths.load(paths.STATE, {}).get("packs", []))
+    need = catalog.total_size(list({f for p in pack_view() if p["id"] in repair_ids and p["enabled"]
+                                    for f in p["files"] if not installer.file_done(f)})) / 1024 ** 3
     need += 0 if installer.comfy_ready() else 8
     if need > c["disk_free_gb"] - 5:
         raise HTTPException(400, f"磁盘空间不够：还要约 {need:.0f}GB，这个盘只剩 {c['disk_free_gb']:.0f}GB")
@@ -176,8 +216,17 @@ def api_start():
     c = system_check()
     if not installer.comfy_ready():
         raise HTTPException(400, "还没装好 ComfyUI，先点「开始安装」")
-    installer.write_installed(c["gpu"], c["ram_gb"])
-    services.start_all(c["gpu"]["index"] if c["gpu"] else None)
+    try:
+        detected = comfy_detect.select()
+        if detected["running"] and not detected["directory_known"]:
+            raise ValueError("请先填写运行中 ComfyUI 的实际安装目录，避免误写工作流到其他安装")
+        audit = comfy_detect.audit(paths.load(paths.STATE, {}).get("packs", []), c["gpu"], c["ram_gb"])
+        if audit["running"] and (audit["missing_nodes"] or any(not m["visible"] for m in audit["models"])):
+            raise ValueError("ComfyUI 缺少所需节点或尚未加载模型，请先补齐依赖并重启 ComfyUI，再重新检测")
+        installer.write_installed(c["gpu"], c["ram_gb"])
+        services.start_all(c["gpu"]["index"] if c["gpu"] else None)
+    except (ValueError, RuntimeError, OSError) as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
 
 
@@ -204,8 +253,11 @@ def _auto_start(open_browser: bool = False) -> None:
     c = system_check()
     st = paths.load(paths.STATE, {})
     if installer.comfy_ready() and st.get("packs") and c["gpu"]:
-        installer.write_installed(c["gpu"], c["ram_gb"])
-        services.start_all(c["gpu"]["index"])
+        try:
+            api_start()
+        except HTTPException as e:
+            installer.log("自动启动未完成：" + str(e.detail))
+            return
         for _ in range(240):
             h = services.health()
             if h["canvas"]["ok"]:

@@ -59,6 +59,19 @@ footer{color:var(--muted);font-size:13px}
   </section>
 
   <section class="card">
+    <h2>已有 ComfyUI 检测 / 复用</h2>
+    <p class="sub" style="margin-bottom:10px">自动检查常见安装目录和本用户运行中的 ComfyUI。未发现时再安装本项目版本；只补所选功能缺失的模型、GGUF 插件和 API 工作流。不覆盖已有文件，也不会停止外部 ComfyUI。</p>
+    <label>安装目录（自动检测不到或有多个实例时填写）：
+      <input type="text" id="comfydir" placeholder="例如 /opt/ComfyUI，留空自动检测">
+    </label>
+    <label>本机地址（只支持回环地址）：
+      <input type="text" id="comfyurl" placeholder="例如 http://127.0.0.1:8188，留空自动检测">
+    </label>
+    <div class="btns"><button id="comfysave">保存 ComfyUI 设置</button><button id="comfycheck">重新检测所选功能</button></div>
+    <pre id="comfyreport">正在检测……</pre>
+  </section>
+
+  <section class="card">
     <h2>② 选择要安装的功能</h2>
     <p class="sub" style="margin-bottom:12px">按你的显卡自动勾选了推荐项。灰色的是这张显卡跑不动的。ComfyUI 和 PyTorch 第一次会自动装（约 8GB）。</p>
     <div id="packs"></div>
@@ -70,7 +83,7 @@ footer{color:var(--muted);font-size:13px}
       <input type="text" id="importdir" placeholder="例如 /opt/ComfyUI/models">
     </details>
     <div class="btns">
-      <button class="primary" id="install">开始安装</button>
+      <button class="primary" id="install">开始安装 / 补齐缺失项</button>
       <button id="pause">暂停下载</button>
       <span id="total" style="align-self:center;color:var(--muted)"></span>
     </div>
@@ -172,8 +185,40 @@ async function load(force) {
   if (!chosen.size) check.packs.forEach((p) => { if (p.installed || (p.recommended && !check.state.packs)) chosen.add(p.id); });
   $("mirror").checked = !!check.settings.mirror;
   $("importdir").value = (check.settings.import_dirs || [])[0] || "";
+  $("comfydir").value = check.settings.comfy_dir || "";
+  $("comfyurl").value = check.settings.comfy_url || "";
   renderHw(); renderPacks();
+  await auditComfy(!!force);
 }
+async function auditComfy(force = true) {
+  try {
+    const a = await api('/api/comfy/audit?packs=' + encodeURIComponent([...chosen].join(',')) + '&force=' + force);
+    const lines = [
+      '目录：' + a.directory + (a.existing ? '（已安装）' : '（未发现源码）'),
+      '地址：' + a.url + (a.running ? '（运行中，可复用）' : '（未启动）'),
+      '发现的安装：' + (a.directories.join('、') || '无'),
+      '运行实例：' + (a.instances.map(i => i.url + (i.directory ? ' → ' + i.directory : '')).join('、') || '无'),
+    ];
+    if (a.mismatch) lines.push('⚠ 配置目录与运行实例不一致，请修正。');
+    if (!a.directory_known) lines.push('⚠ 无法将 API 对应到磁盘目录，请填写实际安装目录后再补装。');
+    if (a.occupied) lines.push('⚠ 端口被占用或 ComfyUI 尚未就绪，不会重复启动。');
+    lines.push('GGUF 插件：' + (!a.plugin.required ? '所选功能不需要' : a.plugin.loaded ? '已加载' : a.plugin.installed ? '文件已安装，需启动/重启确认加载' : '缺失，将补装'));
+    lines.push('节点：' + (!a.running ? '实例未启动，启动后才能验证' : a.missing_nodes.length ? '缺失 ' + a.missing_nodes.join('、') : '所选功能所需节点齐全'));
+    if (a.core_missing.length) lines.push('⚠ 缺少内置节点，请升级原 ComfyUI 后重启；不会覆盖你的源码。');
+    lines.push('模型：' + a.models.filter(m => m.present).length + '/' + a.models.length + ' 已有');
+    a.models.forEach(m => lines.push('  ' + (m.present ? '✓ ' : '缺失：') + m.name + (m.visible ? '（API 可见，仅按文件名匹配）' : m.present ? '（本地大小校验；运行后确认可见）' : '')));
+    lines.push('API 工作流模板：' + a.workflows.filter(w => w.present).length + '/' + a.workflows.length + ' 已有，缺失时安装补齐；非前端拖入式工作流');
+    if (a.running) lines.push('外部实例不会被停止；补装插件/模型后可能需要手动重启，再重新检测。');
+    $("comfyreport").textContent = lines.join('\n');
+  } catch (e) { $("comfyreport").textContent = e.message; }
+}
+$("comfycheck").onclick = () => auditComfy();
+$("comfysave").onclick = async () => {
+  try {
+    await api('/api/settings', {method: 'POST', body: JSON.stringify({comfy_dir: $("comfydir").value, comfy_url: $("comfyurl").value})});
+    await load(true);
+  } catch (e) { $("comfyreport").textContent = e.message; }
+};
 async function saveSettings() {
   await api("/api/settings", { method: "POST", body: JSON.stringify({ mirror: $("mirror").checked, import_dirs: [$("importdir").value] }) });
 }
@@ -224,7 +269,7 @@ async function svc() {
   const s = await api("/api/services"); canvasUrl = s.canvas_url;
   const name = { comfyui: "ComfyUI", canvas: "画布", worker: "任务服务" };
   $("svc").innerHTML = Object.entries(s.health).map(([k, v]) =>
-    `<span><i class="dot ${v.ok ? "ok" : v.running ? "run" : ""}"></i>${name[k]}：${v.ok ? "正常" : v.running ? "启动中…" : "未启动"}</span>`).join("");
+    `<span><i class="dot ${v.ok ? "ok" : v.running ? "run" : ""}"></i>${name[k]}：${v.ok ? "正常" : v.running ? "启动中…" : "未启动"}${v.external ? "（外部实例，不会停止）" : ""}</span>`).join("");
   return s;
 }
 async function waitCanvas() {
