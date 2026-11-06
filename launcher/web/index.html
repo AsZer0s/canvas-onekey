@@ -169,8 +169,8 @@ function renderPacks() {
     <label class="pack ${p.enabled ? "" : "disabled"}">
       <input type="checkbox" data-pack="${p.id}" ${chosen.has(p.id) ? "checked" : ""} ${p.enabled ? "" : "disabled"}>
       <div>
-        <div class="t">${p.name}${p.recommended ? '<span class="tag rec">推荐</span>' : ""}${p.installed ? '<span class="tag done">已安装</span>' : ""}
-          <span class="tag">${p.installed ? p.size_gb + "GB" : p.missing_gb < p.size_gb ? "还要下 " + p.missing_gb + "GB" : p.size_gb + "GB"}</span></div>
+        <div class="t">${p.name}${p.recommended ? '<span class="tag rec">推荐</span>' : ""}${p.available ? '<span class="tag done">已有</span>' : p.present_count ? '<span class="tag done">部分已有 ' + p.present_count + '/' + p.file_count + '</span>' : ""}${p.installed ? '<span class="tag done">已接入画布</span>' : ""}
+          <span class="tag">${p.available ? "无需下载" : !p.file_count ? "不可用" : "还要下 " + gb(Object.values(p.missing).reduce((s, b) => s + b, 0))}</span></div>
         <div class="d">${p.desc}</div>${p.warn ? `<div class="w">${p.warn}</div>` : ""}
       </div>
     </label>`).join("") || '<div class="err">没有检测到能用的 NVIDIA 显卡，一键包装不了本地模型。</div>';

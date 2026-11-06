@@ -67,6 +67,8 @@ def pack_view() -> list[dict]:
     for p in catalog.packs_for(c["gpu"], c["ram_gb"]):
         missing = [f for f in p["files"] if not installer.file_done(f)]
         out.append({**p, "installed": p["id"] in have and not missing,
+                    "available": bool(p["files"]) and not missing,
+                    "present_count": len(p["files"]) - len(missing), "file_count": len(p["files"]),
                     "missing": {f: catalog.FILES[f]["size"] for f in missing},
                     "size_gb": round(catalog.total_size(p["files"]) / 1e9, 1),
                     "missing_gb": round(catalog.total_size(missing) / 1e9, 1)})

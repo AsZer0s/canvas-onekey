@@ -100,6 +100,42 @@ class LauncherTests(unittest.TestCase):
     def test_system_interpreter(self):
         self.assertEqual(self.paths.COMFY_PY, Path(sys.executable))
 
+    def test_pack_view_marks_existing_models_without_install_state(self):
+        gpu_info = {"cc": 12, "vram_gb": 24}
+        with patch.object(self.main, "system_check", return_value={"gpu": gpu_info, "ram_gb": 64}), \
+                patch.object(self.paths, "load", return_value={}), \
+                patch.object(self.installer, "file_done", return_value=True):
+            packs = self.main.pack_view()
+        qwen = next(p for p in packs if p["id"] == "qwen")
+        self.assertTrue(qwen["available"])
+        self.assertFalse(qwen["installed"])
+        self.assertEqual(qwen["present_count"], qwen["file_count"])
+        self.assertEqual(qwen["missing"], {})
+
+    def test_pack_view_marks_partial_and_registered_models(self):
+        gpu_info = {"cc": 12, "vram_gb": 24}
+        with patch.object(self.main, "system_check", return_value={"gpu": gpu_info, "ram_gb": 64}), \
+                patch.object(self.paths, "load", return_value={"packs": ["qwen"]}), \
+                patch.object(self.installer, "file_done", side_effect=lambda fid: fid != "qwen_vae"):
+            qwen = next(p for p in self.main.pack_view() if p["id"] == "qwen")
+        self.assertFalse(qwen["available"])
+        self.assertFalse(qwen["installed"])
+        self.assertEqual(qwen["present_count"], 2)
+        self.assertEqual(list(qwen["missing"]), ["qwen_vae"])
+        with patch.object(self.main, "system_check", return_value={"gpu": gpu_info, "ram_gb": 64}), \
+                patch.object(self.paths, "load", return_value={"packs": ["qwen"]}), \
+                patch.object(self.installer, "file_done", return_value=True):
+            qwen = next(p for p in self.main.pack_view() if p["id"] == "qwen")
+        self.assertTrue(qwen["available"])
+        self.assertTrue(qwen["installed"])
+
+    def test_empty_disabled_pack_is_not_marked_available(self):
+        with patch.object(self.main, "system_check", return_value={"gpu": {"cc": 8.6, "vram_gb": 8}, "ram_gb": 32}), \
+                patch.object(self.paths, "load", return_value={}):
+            h3 = next(p for p in self.main.pack_view() if p["id"] == "h3_fl")
+        self.assertFalse(h3["available"])
+        self.assertEqual(h3["file_count"], 0)
+
     def test_pip_environment(self):
         with patch.object(self.paths, "load", return_value={"mirror": True}), \
                 patch.dict(os.environ, {"PIP_BREAK_SYSTEM_PACKAGES": "1"}):
