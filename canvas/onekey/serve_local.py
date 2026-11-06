@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import sys
@@ -19,6 +18,7 @@ os.environ.setdefault("DOUBAO_HOST", "127.0.0.1")
 os.environ.setdefault("DOUBAO_PORT", "10027")
 
 import uvicorn  # noqa: E402
+from access import LocalAccess  # noqa: E402
 
 # 画布里显示的本地模型（只放已经装好的）
 VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
@@ -64,25 +64,6 @@ def seed_channels() -> None:
             myapi_store.delete(mid)
 
 
-class LoopbackOnly:
-    """只让本机访问：一键包不开局域网，避免别人连进来用你的显卡。"""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "websocket"):
-            host = (scope.get("client") or ("0.0.0.0", 0))[0]
-            try:
-                ok = ipaddress.ip_address(host).is_loopback
-            except ValueError:
-                ok = False
-            if not ok:
-                from starlette.responses import PlainTextResponse
-                return await PlainTextResponse("只允许本机访问", status_code=403)(scope, receive, send)
-        await self.app(scope, receive, send)
-
-
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "worker":
         from backend.config import WORKER_PORT
@@ -90,7 +71,8 @@ def main() -> None:
         from backend.log_setup import setup_file_logging
 
         setup_file_logging(name="worker")
-        uvicorn.run(LoopbackOnly(worker_app), host="127.0.0.1", port=WORKER_PORT, log_level="info")
+        uvicorn.run(LocalAccess(worker_app), host="127.0.0.1", port=WORKER_PORT,
+                    log_level="info", proxy_headers=False)
         return
     from backend.main import app as canvas
     from bridge import local, recover_interrupted
@@ -98,7 +80,9 @@ def main() -> None:
     recover_interrupted()
     seed_channels()
     canvas.mount("/local", local)
-    uvicorn.run(LoopbackOnly(canvas), host="127.0.0.1", port=int(os.environ["DOUBAO_PORT"]), log_level="info")
+    # cloudflared 在本机转发；不让 X-Forwarded-For 把真实回环连接改成公网客户端 IP。
+    uvicorn.run(LocalAccess(canvas, allow_tunnel=True), host="127.0.0.1", port=int(os.environ["DOUBAO_PORT"]),
+                log_level="info", proxy_headers=False)
 
 
 if __name__ == "__main__":

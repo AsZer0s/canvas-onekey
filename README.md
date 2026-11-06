@@ -69,6 +69,18 @@ ssh -N -L 10020:127.0.0.1:10020 -L 10027:127.0.0.1:10027 user@server
 
 随后在自己电脑打开 `http://127.0.0.1:10020` 或 `http://127.0.0.1:10027`。参考图路径指的是 Linux 服务器上的路径，不是客户端电脑的路径。
 
+### Cloudflare Quick Tunnel 访问画布
+
+画布允许 `trycloudflare.com` 及其子域名作为入口，仍只监听 `127.0.0.1:10027`，不开放局域网监听。在运行画布的同一台机器上运行：
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:10027
+```
+
+用 cloudflared 输出的 `https://随机名称.trycloudflare.com` 打开画布。画布根据真实本机连接和 HTTP Host 校验，不信任 `X-Forwarded-For` / `X-Forwarded-Host` 来放行；请保留原始隧道 Host，不要改成任意其他域名。管理页、任务服务和 ComfyUI 不在此次隧道放行范围内，请不要将隧道指向它们。
+
+**安全提醒**：Quick Tunnel 的公开链接不是密码，域名白名单也不是身份认证。本版本画布默认本地操作员模式，获得链接的人可能读取画板、修改素材并消耗 GPU；只在可信场景临时使用，不要公开传播链接。长期远程使用请采用具备 Cloudflare Access 身份验证的部署或 SSH 隧道；自定义域名不在当前自动放行列表内。ComfyUI 的 Basic / Bearer 认证只保护后端 ComfyUI，不会保护这个公开画布入口。
+
 ## 三、在画布里用
 
 | 想做什么 | 节点 | 模型 | 怎么连 |
