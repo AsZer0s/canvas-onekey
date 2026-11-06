@@ -30,7 +30,7 @@ def valid_install(root: Path) -> bool:
 
 
 def process_installs() -> list[dict]:
-    """从同一用户可读的 /proc 命令行发现 main.py 和实际监听端口。"""
+    """从可读的 /proc 命令行发现 main.py 和实际端口（包含 Supervisor 子进程）。"""
     found = []
     proc = Path("/proc")
     try:
@@ -41,10 +41,10 @@ def process_installs() -> list[dict]:
         if not entry.name.isdigit():
             continue
         try:
-            if hasattr(os, "getuid") and entry.stat().st_uid != os.getuid():
-                continue
             args = (entry / "cmdline").read_bytes().decode("utf-8", errors="replace").strip("\0").split("\0")
             script = next((a for a in args[1:] if Path(a).name == "main.py"), None)
+            if not script and any(a == "-m" and args[i + 1:i + 2] == ["main"] for i, a in enumerate(args)):
+                script = "main.py"
             if not script:
                 continue
             cwd = (entry / "cwd").resolve(strict=True)
@@ -76,20 +76,38 @@ def common_installs() -> list[Path]:
 
 
 def probe(url: str) -> dict:
-    try:
-        with httpx.Client(timeout=2, trust_env=False, follow_redirects=False) as client:
-            stats = client.get(url + "/system_stats")
-            stats.raise_for_status()
-            if not isinstance(stats.json(), dict) or "system" not in stats.json():
-                return {}
-            info = client.get(url + "/object_info")
-            info.raise_for_status()
-            nodes = info.json()
-            if not isinstance(nodes, dict) or "KSampler" not in nodes or any(not isinstance(v, dict) for v in nodes.values()):
-                return {}
-            return {"stats": stats.json(), "nodes": nodes}
-    except (httpx.HTTPError, ValueError):
-        return {}
+    """独立检查轻量健康接口和可能很慢的节点清单；保留部分成功及失败原因。"""
+    result = {"api_ready": False, "nodes_ready": False, "stats": {}, "nodes": {}, "diagnostics": []}
+    with httpx.Client(timeout=httpx.Timeout(10, connect=3), trust_env=False, follow_redirects=False) as client:
+        for endpoint, key, read_timeout in (("/system_stats", "stats", 10), ("/object_info", "nodes", 60)):
+            try:
+                response = client.get(url + endpoint, timeout=httpx.Timeout(read_timeout, connect=3))
+                if not response.is_success:
+                    hint = ("需要认证，请使用未被认证代理拦截的本机原生 API 地址" if response.status_code in (401, 403) else
+                            "发生重定向，请填写本机原生 API 地址（不会自动跟随跳转）" if response.is_redirect else
+                            "接口不存在，请检查是否填写了 portal / 代理端口而非 ComfyUI 原生端口" if response.status_code == 404 else
+                            "请查看 Supervisor 中 ComfyUI 的启动日志")
+                    result["diagnostics"].append(f"{endpoint}: HTTP {response.status_code}；{hint}")
+                    continue
+                data = response.json()
+                valid = (isinstance(data, dict) and (isinstance(data.get("system"), dict) if key == "stats" else
+                         "KSampler" in data and all(isinstance(v, dict) for v in data.values())))
+                if not valid:
+                    result["diagnostics"].append(f"{endpoint}: 返回的 JSON 不是预期的 ComfyUI 数据，请检查 API 地址")
+                    continue
+                result[key] = data
+                result["api_ready" if key == "stats" else "nodes_ready"] = True
+            except httpx.TimeoutException:
+                result["diagnostics"].append(f"{endpoint}: 请求超时（读取上限 {read_timeout} 秒），服务可能仍在加载插件")
+            except httpx.ConnectError:
+                result["diagnostics"].append(f"{endpoint}: 连接失败，请检查监听地址、端口和 Supervisor 日志")
+                # 连接都无法建立时不必再等一次相同地址。
+                break
+            except httpx.HTTPError as e:
+                result["diagnostics"].append(f"{endpoint}: HTTP 通信失败（{type(e).__name__}）")
+            except ValueError:
+                result["diagnostics"].append(f"{endpoint}: 返回内容不是 JSON，可能连接到了网页 / 代理而非 ComfyUI API")
+    return result
 
 
 def discover(force: bool = False) -> dict:
@@ -103,11 +121,13 @@ def discover(force: bool = False) -> dict:
     runtime = {}
     for url in urls[:16]:
         result = probe(url)
-        if not result:
-            continue
-        proc = next((p for p in processes if p["url"] == url), {})
-        instances.append({"url": url, "directory": proc.get("directory", ""), "pid": proc.get("pid")})
         runtime[url] = result
+        proc = next((p for p in processes if p["url"] == url), {})
+        if result.get("api_ready") or result.get("nodes_ready") or result.get("stats") or result.get("nodes") or proc:
+            instances.append({"url": url, "directory": proc.get("directory", ""), "pid": proc.get("pid"),
+                              "process_running": bool(proc),
+                              "api_ready": result.get("api_ready", bool(result.get("stats"))),
+                              "nodes_ready": result.get("nodes_ready", bool(result.get("nodes")))})
     settings = paths.load(paths.SETTINGS, {})
     explicit = bool(settings.get("comfy_dir") or os.environ.get("COMFYUI_DIR"))
     explicit_url = bool(settings.get("comfy_url") or os.environ.get("COMFYUI_URL"))
@@ -127,11 +147,18 @@ def discover(force: bool = False) -> dict:
         chosen_dir = directories[0]
     # 指定目录与已知运行实例不一致时不接错实例。
     mismatch = bool(selected and explicit and selected["directory"] and selected["directory"] != str(chosen_dir))
+    current = runtime.get(chosen_url, {}) if not mismatch else {}
+    api_ready = current.get("api_ready", bool(current.get("stats"))) or current.get("nodes_ready", bool(current.get("nodes")))
+    occupied = port_open(chosen_url)
     value = {"directories": [str(p) for p in directories], "instances": instances,
              "directory": str(chosen_dir), "url": chosen_url, "running": bool(selected) and not mismatch,
+             "process_running": bool(selected and selected["pid"]) and not mismatch,
+             "api_ready": api_ready, "nodes_ready": current.get("nodes_ready", bool(current.get("nodes"))),
+             "occupied": occupied,
+             "diagnostics": current.get("diagnostics", []),
              "existing": valid_install(chosen_dir), "mismatch": mismatch,
              "directory_known": bool(not selected or selected["directory"] or explicit),
-             "runtime": runtime.get(chosen_url, {}) if not mismatch else {}}
+             "runtime": current}
     _cache.update(key=key, time=time.monotonic(), value=value)
     return value
 
@@ -222,7 +249,7 @@ def audit(pack_ids: list[str], gpu: dict | None, ram: float, force: bool = False
     files = list(dict.fromkeys(f for pid in pack_ids if pid in packs for f in packs[pid]["files"]))
     expected = workflows.expected_install(pack_ids, gpu, ram)
     required = workflows.required_nodes(expected)
-    missing_nodes = [n for n in required if n not in nodes] if result["running"] else []
+    missing_nodes = [n for n in required if n not in nodes] if result.get("nodes_ready", bool(nodes)) else []
     models = [{"id": fid, "name": catalog.name_of(fid), "present": bool(api_model(fid, nodes) or local_model(fid, root)),
                "visible": bool(api_model(fid, nodes)), "verified": "filename_only" if api_model(fid, nodes) else "local_size"}
               for fid in files]
@@ -236,5 +263,5 @@ def audit(pack_ids: list[str], gpu: dict | None, ram: float, force: bool = False
     public.update(models=models, plugin=plugin, workflows=templates, required_nodes=required,
                   missing_nodes=missing_nodes,
                   core_missing=[n for n in missing_nodes if n not in {"UnetLoaderGGUF", "CLIPLoaderGGUF"}],
-                  occupied=not result["running"] and port_open(result["url"]))
+                   occupied=result.get("occupied", port_open(result["url"])))
     return public

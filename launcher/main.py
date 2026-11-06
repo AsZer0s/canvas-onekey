@@ -83,6 +83,8 @@ def api_check(force: bool = False):
     c = system_check(force)
     detected = comfy_detect.discover(force)
     return {**c, "packs": pack_view(), "comfy_ready": installer.comfy_ready(),
+            "comfy_files_only": detected["existing"] and detected["directory_known"]
+                                and (detected["running"] or detected.get("occupied", False)),
             "comfy": {k: v for k, v in detected.items() if k != "runtime"},
             "services_running": services.health()["comfyui"]["running"],
             "settings": paths.load(paths.SETTINGS, {}), "state": paths.load(paths.STATE, {})}
@@ -132,9 +134,15 @@ def _install(pack_ids: list[str]) -> None:
     detected = comfy_detect.select()
     if not c["torch"]:
         raise RuntimeError(c["torch_note"] or "显卡驱动不满足要求")
-    if not detected["running"] and comfy_detect.port_open(detected["url"]):
-        raise RuntimeError("ComfyUI 端口被占用或实例未就绪，请确认地址后再安装")
-    if not installer.comfy_ready():
+    occupied = detected.get("occupied", False)
+    files_only = detected["existing"] and detected["directory_known"] and (detected["running"] or occupied)
+    if occupied and not files_only:
+        raise RuntimeError("API 尚未验证且端口有监听；请先填写有效的 ComfyUI 安装目录，才可补齐磁盘文件")
+    if files_only:
+        installer.log("复用已有 ComfyUI 目录，仅补齐所选功能的插件 / 模型 / 工作流；不重复启动或修改其 PyTorch")
+        for message in detected.get("diagnostics", []):
+            installer.log("API 检测提示：" + message)
+    elif not installer.comfy_ready():
         installer.install_comfy(c["torch"])
     if detected["running"] and (not detected["existing"] or not detected["directory_known"]):
         raise RuntimeError("已发现运行中的 ComfyUI，但无法确定安装目录；请填写 ComfyUI 目录以补装插件、模型和工作流")
@@ -149,7 +157,11 @@ def _install(pack_ids: list[str]) -> None:
     audit = comfy_detect.audit(repair_ids, c["gpu"], c["ram_gb"], force=True)
     if audit["core_missing"]:
         installer.log("当前 ComfyUI 缺少内置节点：" + "、".join(audit["core_missing"]) + "；请自行升级 ComfyUI 后重启，不会覆盖原安装")
-    if audit["running"] and (audit["missing_nodes"] or any(not m["visible"] for m in audit["models"])):
+    if not audit.get("nodes_ready", False):
+        installer.log("磁盘文件补齐完成；节点 API 尚未验证，不能据此判定缺少节点。请检查 ComfyUI 原生端口和 Supervisor 日志，再重新检测")
+        for message in audit.get("diagnostics", []):
+            installer.log("API 检测提示：" + message)
+    elif audit["running"] and (audit["missing_nodes"] or any(not m["visible"] for m in audit["models"])):
         installer.log("补装完成；请手动重启已有 ComfyUI，再点「重新检测」确认节点和模型已加载")
     if any(services.health()[k]["running"] for k in ("canvas",)):
         services.restart_canvas()
@@ -168,7 +180,9 @@ def api_install(body: dict):
     repair_ids = set(ids) | set(paths.load(paths.STATE, {}).get("packs", []))
     need = catalog.total_size(list({f for p in pack_view() if p["id"] in repair_ids and p["enabled"]
                                     for f in p["files"] if not installer.file_done(f)})) / 1024 ** 3
-    need += 0 if installer.comfy_ready() else 8
+    detected = comfy_detect.discover()
+    files_only = detected["existing"] and detected["directory_known"] and (detected["running"] or detected.get("occupied", False))
+    need += 0 if installer.comfy_ready() or files_only else 8
     if need > c["disk_free_gb"] - 5:
         raise HTTPException(400, f"磁盘空间不够：还要约 {need:.0f}GB，这个盘只剩 {c['disk_free_gb']:.0f}GB")
     if not installer.start_job(_install, ids):
@@ -218,6 +232,9 @@ def api_start():
         raise HTTPException(400, "还没装好 ComfyUI，先点「开始安装」")
     try:
         detected = comfy_detect.select()
+        if (detected["running"] or detected.get("occupied")) and not detected.get("nodes_ready", False):
+            details = "；".join(detected.get("diagnostics", []))
+            raise ValueError("已有实例的节点 API 尚未就绪；不会另开 ComfyUI。请检查原生 API 地址及 Supervisor 日志。" + details)
         if detected["running"] and not detected["directory_known"]:
             raise ValueError("请先填写运行中 ComfyUI 的实际安装目录，避免误写工作流到其他安装")
         audit = comfy_detect.audit(paths.load(paths.STATE, {}).get("packs", []), c["gpu"], c["ram_gb"])

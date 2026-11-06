@@ -368,7 +368,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_start_reuses_external_process_without_spawning_comfy(self):
         import comfy_detect
-        with patch.object(comfy_detect, "select", return_value={"running": True}), \
+        with patch.object(comfy_detect, "select", return_value={"running": True, "nodes_ready": True}), \
                 patch.object(self.services, "_spawn") as spawn:
             self.services.start_all(0)
         self.assertEqual([call.args[0] for call in spawn.call_args_list], ["worker", "canvas"])
@@ -431,7 +431,95 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("SaveImage", result["nodes"])
         invalid = httpx.MockTransport(lambda request: httpx.Response(200, json={"status": "ok"}))
         with patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=invalid, **kw)):
-            self.assertEqual(module.probe("http://127.0.0.1:8188"), {})
+            result = module.probe("http://127.0.0.1:8188")
+        self.assertFalse(result["api_ready"])
+        self.assertFalse(result["nodes_ready"])
+        self.assertTrue(result["diagnostics"])
+
+    def test_node_timeout_does_not_hide_healthy_comfy(self):
+        import httpx
+        spec = importlib.util.spec_from_file_location("probe_partial", ROOT / "launcher" / "comfy_detect.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = httpx.Client
+        def handler(request):
+            if request.url.path == "/system_stats":
+                return httpx.Response(200, json={"system": {}})
+            raise httpx.ReadTimeout("slow plugin", request=request)
+        with patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=httpx.MockTransport(handler), **kw)):
+            result = module.probe("http://127.0.0.1:8188")
+        self.assertTrue(result["api_ready"])
+        self.assertFalse(result["nodes_ready"])
+        self.assertIn("60 秒", result["diagnostics"][0])
+        import comfy_detect
+        with patch.object(comfy_detect, "probe", return_value=result):
+            detected = comfy_detect.discover(force=True)
+        self.assertTrue(detected["running"])
+        self.assertFalse(detected["nodes_ready"])
+
+    def test_probe_diagnoses_auth_redirect_and_html(self):
+        import httpx
+        spec = importlib.util.spec_from_file_location("probe_errors", ROOT / "launcher" / "comfy_detect.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = httpx.Client
+        for status, text, hint in ((401, "auth", "认证"), (403, "forbidden", "认证"),
+                                   (302, "redirect", "重定向"), (404, "missing", "原生端口"),
+                                   (200, "<html>portal</html>", "不是 JSON")):
+            transport = httpx.MockTransport(lambda request: httpx.Response(status, text=text))
+            with self.subTest(status=status), \
+                    patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=transport, **kw)):
+                result = module.probe("http://127.0.0.1:8188")
+                self.assertFalse(result["api_ready"])
+                self.assertIn(hint, result["diagnostics"][0])
+
+    def test_process_is_reported_even_if_api_is_unavailable(self):
+        import comfy_detect
+        root = self.root / "supervisor-comfy"
+        process = {"directory": str(root), "url": self.paths.comfy_url(), "pid": 598}
+        partial = {"api_ready": False, "nodes_ready": False, "diagnostics": ["/system_stats: HTTP 401"], "nodes": {}}
+        with patch.object(comfy_detect, "process_installs", return_value=[process]), \
+                patch.object(comfy_detect, "probe", return_value=partial):
+            result = comfy_detect.discover(force=True)
+        self.assertTrue(result["process_running"])
+        self.assertTrue(result["running"])
+        self.assertFalse(result["api_ready"])
+        self.assertEqual(result["instances"][0]["pid"], 598)
+
+    def test_audit_does_not_mark_unknown_nodes_as_missing(self):
+        import comfy_detect
+        result = {"directory": str(self.root), "url": self.paths.comfy_url(), "running": True,
+                  "nodes_ready": False, "runtime": {"nodes": {}}, "diagnostics": ["timeout"]}
+        with patch.object(comfy_detect, "discover", return_value=result):
+            audit = comfy_detect.audit(["qwen"], {"cc": 12, "vram_gb": 24}, 64)
+        self.assertEqual(audit["missing_nodes"], [])
+        self.assertEqual(audit["core_missing"], [])
+        self.assertEqual(audit["diagnostics"], ["timeout"])
+
+    def test_install_repairs_files_when_port_is_busy_and_api_unknown(self):
+        import comfy_detect
+        result = {"existing": True, "directory_known": True, "occupied": True,
+                  "running": False, "diagnostics": ["/object_info: timeout"]}
+        gpu_info = {"cc": 12, "vram_gb": 24}
+        with patch.object(self.main, "system_check", return_value={"gpu": gpu_info, "ram_gb": 64, "torch": "cu130"}), \
+                patch.object(comfy_detect, "select", return_value=result), \
+                patch.object(comfy_detect, "audit", return_value={"core_missing": [], "nodes_ready": False}), \
+                patch.object(self.paths, "load", return_value={}), \
+                patch.object(self.installer, "install_comfy") as install_comfy, \
+                patch.object(self.installer, "install_packs") as install_packs, \
+                patch.object(self.services, "health", return_value={"canvas": {"running": False}}):
+            self.main._install(["qwen"])
+        install_comfy.assert_not_called()
+        install_packs.assert_called_once_with(["qwen"], gpu_info, 64, [])
+
+    def test_start_does_not_reuse_process_without_node_api(self):
+        import comfy_detect
+        with patch.object(comfy_detect, "select", return_value={"running": True, "nodes_ready": False,
+                                                               "diagnostics": ["/object_info: HTTP 401"]}), \
+                patch.object(self.services, "_spawn") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+                self.services.start_all(0)
+        spawn.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "需要 Linux 符号链接和 /proc 支持")
     def test_detect_real_running_comfy_commandline(self):

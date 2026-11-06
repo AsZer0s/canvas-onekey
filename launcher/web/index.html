@@ -60,7 +60,7 @@ footer{color:var(--muted);font-size:13px}
 
   <section class="card">
     <h2>已有 ComfyUI 检测 / 复用</h2>
-    <p class="sub" style="margin-bottom:10px">自动检查常见安装目录和本用户运行中的 ComfyUI。未发现时再安装本项目版本；只补所选功能缺失的模型、GGUF 插件和 API 工作流。不覆盖已有文件，也不会停止外部 ComfyUI。</p>
+    <p class="sub" style="margin-bottom:10px">自动检查常见安装目录和有权限读取的 ComfyUI 进程（包含 Supervisor 子进程）。未发现时再安装本项目版本；只补所选功能缺失的模型、GGUF 插件和 API 工作流。不覆盖已有文件，也不会停止外部 ComfyUI。</p>
     <label>安装目录（自动检测不到或有多个实例时填写）：
       <input type="text" id="comfydir" placeholder="例如 /opt/ComfyUI，留空自动检测">
     </label>
@@ -178,7 +178,8 @@ function total() {
   const files = {};
   check.packs.filter((p) => chosen.has(p.id)).forEach((p) => Object.assign(files, p.missing));
   const need = Object.values(files).reduce((s, b) => s + b, 0) / 1e9;
-  $("total").textContent = need ? `还要下载约 ${Math.round(need)}GB 模型${check.comfy_ready ? "" : " + 约 8GB 程序"}` : (check.comfy_ready ? "选中的都装好了" : "会先装 ComfyUI（约 8GB）");
+  const reuse = check.comfy_ready || check.comfy_files_only;
+  $("total").textContent = need ? `还要下载约 ${Math.round(need)}GB 模型${reuse ? "" : " + 约 8GB 程序"}` : (reuse ? "本地可检查的选项已齐全；节点 API 状态见检测报告" : "会先装 ComfyUI（约 8GB）");
 }
 async function load(force) {
   check = await api("/api/check" + (force ? "?force=1" : ""));
@@ -193,20 +194,22 @@ async function load(force) {
 async function auditComfy(force = true) {
   try {
     const a = await api('/api/comfy/audit?packs=' + encodeURIComponent([...chosen].join(',')) + '&force=' + force);
+    const state = a.nodes_ready ? 'API 和节点清单可用，可复用' : a.api_ready ? 'API 已响应，节点清单尚未验证' : a.process_running ? '进程运行中，API 尚未就绪' : a.occupied ? '端口有监听，尚未确认是 ComfyUI API' : '未检测到运行实例';
     const lines = [
       '目录：' + a.directory + (a.existing ? '（已安装）' : '（未发现源码）'),
-      '地址：' + a.url + (a.running ? '（运行中，可复用）' : '（未启动）'),
+      '地址：' + a.url + '（' + state + '）',
       '发现的安装：' + (a.directories.join('、') || '无'),
-      '运行实例：' + (a.instances.map(i => i.url + (i.directory ? ' → ' + i.directory : '')).join('、') || '无'),
+      '运行实例：' + (a.instances.map(i => i.url + (i.directory ? ' → ' + i.directory : '') + (i.pid ? ' [PID ' + i.pid + ']' : '')).join('、') || '未识别（不代表端口没有监听）'),
     ];
     if (a.mismatch) lines.push('⚠ 配置目录与运行实例不一致，请修正。');
     if (!a.directory_known) lines.push('⚠ 无法将 API 对应到磁盘目录，请填写实际安装目录后再补装。');
-    if (a.occupied) lines.push('⚠ 端口被占用或 ComfyUI 尚未就绪，不会重复启动。');
+    if (a.occupied && !a.nodes_ready) lines.push('⚠ 已有监听，不会另开实例；目录已确认时仍可补齐磁盘文件。');
+    (a.diagnostics || []).forEach(message => lines.push('API 检测：' + message));
     lines.push('GGUF 插件：' + (!a.plugin.required ? '所选功能不需要' : a.plugin.loaded ? '已加载' : a.plugin.installed ? '文件已安装，需启动/重启确认加载' : '缺失，将补装'));
-    lines.push('节点：' + (!a.running ? '实例未启动，启动后才能验证' : a.missing_nodes.length ? '缺失 ' + a.missing_nodes.join('、') : '所选功能所需节点齐全'));
+    lines.push('节点：' + (!a.nodes_ready ? '尚未验证（节点清单请求失败，不等于节点缺失）' : a.missing_nodes.length ? '缺失 ' + a.missing_nodes.join('、') : '所选功能所需节点齐全'));
     if (a.core_missing.length) lines.push('⚠ 缺少内置节点，请升级原 ComfyUI 后重启；不会覆盖你的源码。');
     lines.push('模型：' + a.models.filter(m => m.present).length + '/' + a.models.length + ' 已有');
-    a.models.forEach(m => lines.push('  ' + (m.present ? '✓ ' : '缺失：') + m.name + (m.visible ? '（API 可见，仅按文件名匹配）' : m.present ? '（本地大小校验；运行后确认可见）' : '')));
+    a.models.forEach(m => lines.push('  ' + (m.present ? '✓ ' : a.nodes_ready ? '缺失：' : '本地未找到，API 未核实：') + m.name + (m.visible ? '（API 可见，仅按文件名匹配）' : m.present ? '（本地大小校验；运行后确认可见）' : '')));
     lines.push('API 工作流模板：' + a.workflows.filter(w => w.present).length + '/' + a.workflows.length + ' 已有，缺失时安装补齐；非前端拖入式工作流');
     if (a.running) lines.push('外部实例不会被停止；补装插件/模型后可能需要手动重启，再重新检测。');
     $("comfyreport").textContent = lines.join('\n');

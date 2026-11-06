@@ -37,6 +37,8 @@ def canvas_env() -> dict:
 
 def start_all(gpu_index: int | None) -> None:
     detected = comfy_detect.select()
+    if detected["running"] and not detected.get("nodes_ready", bool(detected.get("runtime", {}).get("nodes"))):
+        raise RuntimeError("发现已有 ComfyUI 进程，但节点 API 尚未验证；不会重复启动。" + "；".join(detected.get("diagnostics", [])))
     if not detected["running"] and comfy_detect.port_open(paths.comfy_url()):
         raise RuntimeError("ComfyUI 端口已被其他程序占用，或实例尚未启动完成；不会重复启动")
     env = dict(os.environ)

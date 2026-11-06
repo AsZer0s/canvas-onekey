@@ -77,8 +77,9 @@ def python_has(code: str) -> bool:
 
 def install_comfy(torch_idx: str) -> None:
     root = paths.comfy_dir()
-    if comfy_detect.discover()["running"]:
-        log("复用正在运行的 ComfyUI，不重复安装其 Python / PyTorch")
+    detected = comfy_detect.discover()
+    if detected["running"] or (comfy_detect.valid_install(root) and detected.get("occupied")):
+        log("复用已有 ComfyUI，不重复安装其 Python / PyTorch；API 未就绪时只补磁盘文件")
         return
     job["stage"] = "下载 ComfyUI"
     if not (root / "main.py").exists():
@@ -140,6 +141,8 @@ def ensure_gguf_node() -> None:
         os.replace(next(tmp.iterdir()), target)
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
+    if (target / "nodes.py").exists() and not detected.get("nodes_ready", bool(detected["runtime"].get("nodes"))):
+        log("GGUF 插件文件已存在，API 暂不可用，保留现有插件；仅检查系统 Python 的 GGUF 依赖")
     if not python_has("import gguf, sentencepiece, google.protobuf; from importlib.metadata import version; "
                       "assert tuple(map(int, version('gguf').split('.')[:2])) >= (0, 13)"):
         run([str(paths.COMFY_PY), "-m", "pip", "install", "gguf>=0.13.0", "sentencepiece", "protobuf"],

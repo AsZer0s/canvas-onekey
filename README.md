@@ -124,7 +124,7 @@ ssh -N -L 10020:127.0.0.1:10020 -L 10027:127.0.0.1:10027 user@server
 
 管理页新增「已有 ComfyUI 检测 / 复用」，启动时会检查：
 
-- **安装与运行状态**：本项目目录、用户主目录、`~/AI/`、`~/ai/`、`~/apps/`、`/opt/`、`/srv/`、`/workspace/` 下的 `ComfyUI` / `comfyui`，以及本用户 `/proc` 中运行的 `main.py` 和其 `--port`。不会扫描整块硬盘。默认还探测本机 8188 端口；非标准安装可填写目录和本机地址，也可设置 `COMFYUI_DIR`、`COMFYUI_URL`。
+- **安装与运行状态**：本项目目录、用户主目录、`~/AI/`、`~/ai/`、`~/apps/`、`/opt/`、`/srv/`、`/workspace/` 下的 `ComfyUI` / `comfyui`，以及 `/proc` 中有权限读取的 `main.py` 进程和其 `--port`（包含 Supervisor 子进程）。不会扫描整块硬盘。默认还探测本机 8188 端口；非标准安装可填写目录和本机地址，也可设置 `COMFYUI_DIR`、`COMFYUI_URL`。
 - **节点 / 插件**：通过 `/object_info` 对照画布实际生成的工作流，检查所选功能需要的节点。GGUF 档缺少 `ComfyUI-GGUF` 时自动补装固定版本及缺失的系统 pip 依赖；已加载的插件不重装。不随意安装第三方插件。
 - **模型**：复用已有 `models/`、`extra_model_paths.yaml` 和运行实例 API 可见的模型。磁盘文件按名称、大小核验；仅 API 可见时只能按名称匹配，**不能保证内容或大小正确**。缺失文件才下载；下载到本项目 `模型/` 后以符号链接接入已有 ComfyUI 的模型目录，不覆盖同名文件。
 - **工作流**：按所选且已装好的功能补齐 `ComfyUI/user/default/workflows/canvas-onekey/*.api.json`。这是与画布构图器一致的 **API 示例模板，不是可拖入前端的 UI 工作流**；画布实际直接生成并提交工作流，不依赖示例文件。已有模板和用户其他工作流不会覆盖。
@@ -134,6 +134,17 @@ ssh -N -L 10020:127.0.0.1:10020 -L 10027:127.0.0.1:10027 user@server
 运行中的外部 ComfyUI 会直接复用，不另开实例，不更换其 PyTorch；「停止」和退出启动器只会停止本启动器创建的进程。补装插件或新增模型后，可能需要**手动重启原 ComfyUI**再重新检测。未启动的已有安装由系统 Python 启动，会保留已可导入的 CUDA PyTorch，并通过系统 pip 补齐 requirements；请确认它能在系统 Python 下运行。
 
 若缺少 `TextEncodeQwenImage21`、`MiniMaxH3…` 等 **ComfyUI 内置节点**，需要升级原 ComfyUI；本项目不会自动拉取、重置或覆盖你的旧源码。目录不可写、端口被其他服务占用、同名文件冲突时会停止并说明原因。实例运行但无法识别安装目录时，请手动指定，才能补装本地文件。使用自定义 `--user-directory`、多个 `--extra-model-paths-config` 或容器挂载的安装，也请自行确认路径；当前自动扫描不解析这些启动参数。
+
+**Supervisor 显示 RUNNING，但检测不到 API**：进程运行不代表 HTTP API 已就绪。检测会分别显示进程、健康接口、节点清单和端口监听状态，并报告超时、HTTP 401/403、重定向或非 JSON 响应。`/object_info` 的读取超时为 60 秒，避免插件多的实例被 2 秒超时误判。可读的其他用户进程（例如 Supervisor 子进程）也参与发现。即使 API 暂不可用，填写有效目录后仍可补齐磁盘文件，不会重复启动 ComfyUI 或替换其 PyTorch；实际生成前仍必须验证节点 API。API 尚未核实时，本地未找到的模型不代表外部实例中一定没有，请先确认其模型路径，避免重复下载。
+
+在服务器终端检查原生接口（不是公网 Portal / Caddy 的地址）：
+
+```bash
+curl --noproxy '*' --max-time 10 -i http://127.0.0.1:8188/system_stats
+curl --noproxy '*' --max-time 60 -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:8188/object_info
+```
+
+401/403 通常表示认证拦截，HTML / 重定向通常表示连到了代理入口；请查看 Supervisor 的 ComfyUI 日志和实际启动命令，确认 `--port`，并填写同机原生 API 端口。不要为排错关闭认证或把 ComfyUI 暴露到公网。
 
 ## 五、常见问题
 
