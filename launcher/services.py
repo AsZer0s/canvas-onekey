@@ -106,7 +106,9 @@ def health() -> dict:
         ok = False
         if running or name == "comfyui":
             try:
-                response = httpx.get(url, timeout=2, trust_env=False)
+                response = httpx.get(url, timeout=2, trust_env=False,
+                                     auth=paths.auth_for(paths.comfy_url()) if name == "comfyui" else None,
+                                     follow_redirects=False)
                 ok = response.is_success
                 if name == "comfyui":
                     ok = ok and isinstance(response.json(), dict) and "system" in response.json()

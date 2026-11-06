@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,16 @@ CANVAS = ROOT / "canvas"
 STATE = ONEKEY / "state.json"
 INSTALLED = ONEKEY / "installed.json"
 SETTINGS = ONEKEY / "settings.json"
+
+_auth_spec = importlib.util.spec_from_file_location(
+    "onekey_comfy_auth", Path(__spec__.origin if __spec__ else __file__).resolve().parents[1]
+    / "canvas" / "onekey" / "comfy_auth.py")
+comfy_auth = importlib.util.module_from_spec(_auth_spec)
+_auth_spec.loader.exec_module(comfy_auth)
+
+
+def auth_for(url: str):
+    return comfy_auth.client_auth(ONEKEY, url)
 
 COMFY_VERSION = "v0.43.2"
 COMFY_ZIP = f"https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/{COMFY_VERSION}.zip"

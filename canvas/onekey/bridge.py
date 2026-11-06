@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 
 import graphs
+import comfy_auth
 
 DATA = Path(os.environ["ONEKEY_DIR"])
 MEDIA = DATA / "media"
@@ -88,7 +89,8 @@ def comfy() -> str:
 
 async def call(path, method='GET', timeout=30, **kw):
     try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as c:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                     follow_redirects=False) as c:
             r = await c.request(method, comfy() + path, **kw)
     except httpx.HTTPError:
         fail('连不上本机 ComfyUI：请确认一键包的启动窗口还开着，或在管理页点「重新启动」', 502)
@@ -190,7 +192,8 @@ async def media_bytes(value: str) -> bytes:
 
 async def upload_comfy(value: str) -> str:
     raw = await media_bytes(value)
-    async with httpx.AsyncClient(timeout=60, trust_env=False) as c:
+    async with httpx.AsyncClient(timeout=60, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                 follow_redirects=False) as c:
         r = await c.post(comfy() + '/upload/image', files={'image': ('canvas-' + uuid.uuid4().hex + '.png', raw, 'image/png')},
                          data={'subfolder': 'canvas', 'overwrite': 'false'})
         r.raise_for_status()
@@ -249,7 +252,8 @@ async def execute(jid, b, kind):
                         raise RuntimeError('ComfyUI 跑完了但没有返回图片或视频')
                     e = entries[0]
                     name = jid + ('.png' if kind == 'image' else '.mp4')
-                    async with httpx.AsyncClient(timeout=300, trust_env=False) as c:
+                    async with httpx.AsyncClient(timeout=300, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                                 follow_redirects=False) as c:
                         r = await c.get(comfy() + '/view', params={k: e[k] for k in ('filename', 'subfolder', 'type') if k in e})
                         r.raise_for_status()
                         (MEDIA / name).write_bytes(r.content)

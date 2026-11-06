@@ -67,6 +67,12 @@ footer{color:var(--muted);font-size:13px}
     <label>本机地址（只支持回环地址）：
       <input type="text" id="comfyurl" placeholder="例如 http://127.0.0.1:8188，留空自动检测">
     </label>
+    <label class="row"><input type="checkbox" id="comfyauth"> 启用 HTTP Basic Auth（可选）</label>
+    <div id="comfyauthfields" hidden>
+      <label>用户名：<input type="text" id="comfyuser" autocomplete="off"></label>
+      <label>密码：<input type="password" id="comfypass" autocomplete="new-password" style="font:inherit;width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"></label>
+      <p class="sub" id="comfyauthnote" style="margin:4px 0">密码仅保存在本机独立文件中，不回传页面；保存后留空表示保留原密码。更换地址或用户名时需重新填写。</p>
+    </div>
     <div class="btns"><button id="comfysave">保存 ComfyUI 设置</button><button id="comfycheck">重新检测所选功能</button></div>
     <pre id="comfyreport">正在检测……</pre>
   </section>
@@ -188,6 +194,12 @@ async function load(force) {
   $("importdir").value = (check.settings.import_dirs || [])[0] || "";
   $("comfydir").value = check.settings.comfy_dir || "";
   $("comfyurl").value = check.settings.comfy_url || "";
+  const auth = check.comfy_auth || {};
+  $("comfyauth").checked = !!auth.enabled;
+  $("comfyuser").value = auth.username || "";
+  $("comfypass").value = "";
+  $("comfypass").placeholder = auth.password_saved ? "已保存，留空保留密码" : "填写密码";
+  $("comfyauthfields").hidden = !auth.enabled;
   renderHw(); renderPacks();
   await auditComfy(!!force);
 }
@@ -216,9 +228,13 @@ async function auditComfy(force = true) {
   } catch (e) { $("comfyreport").textContent = e.message; }
 }
 $("comfycheck").onclick = () => auditComfy();
+$("comfyauth").onchange = () => { $("comfyauthfields").hidden = !$("comfyauth").checked; };
 $("comfysave").onclick = async () => {
   try {
-    await api('/api/settings', {method: 'POST', body: JSON.stringify({comfy_dir: $("comfydir").value, comfy_url: $("comfyurl").value})});
+    const auth = {enabled: $("comfyauth").checked, username: $("comfyuser").value};
+    if ($("comfypass").value !== "") auth.password = $("comfypass").value;
+    await api('/api/settings', {method: 'POST', body: JSON.stringify({comfy_dir: $("comfydir").value, comfy_url: $("comfyurl").value, comfy_auth: auth})});
+    $("comfypass").value = "";
     await load(true);
   } catch (e) { $("comfyreport").textContent = e.message; }
 };

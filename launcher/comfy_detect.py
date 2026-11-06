@@ -78,12 +78,13 @@ def common_installs() -> list[Path]:
 def probe(url: str) -> dict:
     """独立检查轻量健康接口和可能很慢的节点清单；保留部分成功及失败原因。"""
     result = {"api_ready": False, "nodes_ready": False, "stats": {}, "nodes": {}, "diagnostics": []}
-    with httpx.Client(timeout=httpx.Timeout(10, connect=3), trust_env=False, follow_redirects=False) as client:
+    with httpx.Client(timeout=httpx.Timeout(10, connect=3), trust_env=False, follow_redirects=False,
+                      auth=paths.auth_for(url)) as client:
         for endpoint, key, read_timeout in (("/system_stats", "stats", 10), ("/object_info", "nodes", 60)):
             try:
                 response = client.get(url + endpoint, timeout=httpx.Timeout(read_timeout, connect=3))
                 if not response.is_success:
-                    hint = ("需要认证，请使用未被认证代理拦截的本机原生 API 地址" if response.status_code in (401, 403) else
+                    hint = ("需要认证或凭据错误，请配置 ComfyUI Basic Auth，或使用可访问的本机原生 API 地址" if response.status_code in (401, 403) else
                             "发生重定向，请填写本机原生 API 地址（不会自动跟随跳转）" if response.is_redirect else
                             "接口不存在，请检查是否填写了 portal / 代理端口而非 ComfyUI 原生端口" if response.status_code == 404 else
                             "请查看 Supervisor 中 ComfyUI 的启动日志")

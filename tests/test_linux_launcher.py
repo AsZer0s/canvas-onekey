@@ -473,6 +473,79 @@ class LauncherTests(unittest.TestCase):
                 self.assertFalse(result["api_ready"])
                 self.assertIn(hint, result["diagnostics"][0])
 
+    def test_basic_auth_storage_is_bound_to_one_origin(self):
+        auth = self.paths.comfy_auth
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            url = "http://127.0.0.1:8188"
+            self.assertIsNone(auth.client_auth(root, url))
+            auth.save(root, url, True, "user", "secret-test-password")
+            self.assertEqual(auth.client_auth(root, url), ("user", "secret-test-password"))
+            self.assertIsNone(auth.client_auth(root, "http://127.0.0.1:8190"))
+            self.assertIsNone(auth.client_auth(root, "http://example.com:8188"))
+            self.assertNotIn("secret-test-password", json.dumps(auth.status(root, url)))
+            auth.save(root, url, True, "user", None)
+            self.assertEqual(auth.client_auth(root, url)[1], "secret-test-password")
+            for new_url, username in ((url, "another-user"), ("http://127.0.0.1:8190", "user")):
+                with self.assertRaises(ValueError):
+                    auth.save(root, new_url, True, username, None)
+            if sys.platform.startswith("linux"):
+                self.assertEqual((root / "comfy-auth.json").stat().st_mode & 0o777, 0o600)
+            auth.save(root, url, False)
+            self.assertFalse((root / "comfy-auth.json").exists())
+
+    def test_probe_sends_basic_auth_without_following_redirects(self):
+        import base64
+        import httpx
+        spec = importlib.util.spec_from_file_location("probe_auth", ROOT / "launcher" / "comfy_detect.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = httpx.Client
+        requests = []
+        expected = "Basic " + base64.b64encode(b"user:password").decode()
+        def handler(request):
+            requests.append(request)
+            self.assertEqual(request.headers.get("Authorization"), expected)
+            return httpx.Response(200, json={"system": {}} if request.url.path == "/system_stats" else {"KSampler": {}})
+        with patch.object(self.paths, "auth_for", return_value=("user", "password")), \
+                patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=httpx.MockTransport(handler), **kw)):
+            result = module.probe("http://127.0.0.1:8188")
+        self.assertTrue(result["nodes_ready"])
+        self.assertEqual(len(requests), 2)
+
+    def test_auth_settings_api_never_returns_password(self):
+        from fastapi.testclient import TestClient
+        auth_file = self.paths.ONEKEY / "comfy-auth.json"
+        self.addCleanup(lambda: auth_file.unlink(missing_ok=True))
+        settings = self.paths.SETTINGS
+        old = settings.read_bytes() if settings.exists() else None
+        def restore():
+            settings.write_bytes(old) if old is not None else settings.unlink(missing_ok=True)
+        self.addCleanup(restore)
+        with TestClient(self.main.app) as client:
+            response = client.post("/api/settings", json={"comfy_url": "http://127.0.0.1:8188", "comfy_auth": {
+                "enabled": True, "username": "test-user", "password": "super-secret-test"}})
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("super-secret-test", response.text)
+            self.assertNotIn("super-secret-test", settings.read_text(encoding="utf-8"))
+            check = client.get("/api/check")
+            self.assertNotIn("super-secret-test", check.text)
+            self.assertTrue(check.json()["comfy_auth"]["password_saved"])
+            response = client.post("/api/settings", json={"comfy_auth": {"enabled": True, "username": "test-user"}})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.paths.auth_for("http://127.0.0.1:8188")[1], "super-secret-test")
+            response = client.post("/api/settings", json={"comfy_auth": {"enabled": False}})
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(auth_file.exists())
+
+    def test_health_uses_basic_auth(self):
+        response = Mock(is_success=True)
+        response.json.return_value = {"system": {}}
+        with patch.object(self.paths, "auth_for", return_value=("user", "password")), \
+                patch.object(self.services.httpx, "get", return_value=response) as get:
+            self.assertTrue(self.services.health()["comfyui"]["ok"])
+        self.assertEqual(get.call_args.kwargs["auth"], ("user", "password"))
+
     def test_process_is_reported_even_if_api_is_unavailable(self):
         import comfy_detect
         root = self.root / "supervisor-comfy"

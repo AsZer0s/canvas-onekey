@@ -86,6 +86,7 @@ def api_check(force: bool = False):
             "comfy_files_only": detected["existing"] and detected["directory_known"]
                                 and (detected["running"] or detected.get("occupied", False)),
             "comfy": {k: v for k, v in detected.items() if k != "runtime"},
+            "comfy_auth": paths.comfy_auth.status(paths.ONEKEY, paths.comfy_url()),
             "services_running": services.health()["comfyui"]["running"],
             "settings": paths.load(paths.SETTINGS, {}), "state": paths.load(paths.STATE, {})}
 
@@ -112,6 +113,16 @@ def api_settings(body: dict):
         except ValueError as e:
             raise HTTPException(400, str(e))
         s["comfy_dir"] = str(Path(directory).expanduser().resolve()) if directory else ""
+    if "comfy_auth" in body:
+        auth = body["comfy_auth"]
+        if not isinstance(auth, dict) or not isinstance(auth.get("enabled"), bool):
+            raise HTTPException(400, "Basic Auth 配置格式无效")
+        try:
+            paths.comfy_auth.save(paths.ONEKEY, s.get("comfy_url") or paths.comfy_url(),
+                                  auth["enabled"], auth.get("username", ""), auth.get("password"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        comfy_detect._cache.clear()
     if "mirror" in body:
         s["mirror"] = bool(body["mirror"])
         flag = paths.ONEKEY / "mirror.flag"  # 给启动画布.sh 看：装画布依赖时也走清华镜像
