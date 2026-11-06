@@ -265,7 +265,7 @@ $("install").onclick = async () => {
   catch (e) { alert(e.message); }
 };
 $("pause").onclick = () => api("/api/pause", { method: "POST" });
-$("start").onclick = async () => { try { await api("/api/start", { method: "POST" }); waitCanvas(); } catch (e) { alert(e.message); } };
+$("start").onclick = async () => { try { await api("/api/start", { method: "POST" }); await svc(); } catch (e) { alert(e.message); } };
 $("open").onclick = () => window.open(canvasUrl, "_blank");
 $("stop").onclick = () => api("/api/stop", { method: "POST" }).then(svc);
 document.querySelectorAll("[data-log]").forEach((b) => b.onclick = async () => {
@@ -308,13 +308,6 @@ async function svc() {
   $("svc").innerHTML = Object.entries(s.health).map(([k, v]) =>
     `<span><i class="dot ${v.ok ? "ok" : v.running ? "run" : ""}"></i>${name[k]}：${v.ok ? "正常" : v.running ? "启动中…" : "未启动"}${v.external ? "（外部实例，不会停止）" : ""}</span>`).join("");
   return s;
-}
-async function waitCanvas() {
-  for (let i = 0; i < 240; i++) {
-    const s = await svc();
-    if (s.health.canvas.ok) { window.open(canvasUrl, "_blank"); return; }
-    await new Promise((r) => setTimeout(r, 1500));
-  }
 }
 api("/api/network").then((n) => {
   const t = (k, label) => `${label}：${n[k].ok ? "能连上（" + n[k].ms + "ms）" : "连不上"}`;

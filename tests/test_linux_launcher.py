@@ -219,6 +219,12 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(self.main.parse_args([]).browser)
         self.assertTrue(self.main.parse_args(["--browser"]).browser)
 
+    def test_management_page_only_opens_canvas_on_explicit_click(self):
+        html = (ROOT / "launcher/web/index.html").read_text(encoding="utf-8")
+        open_lines = [line.strip() for line in html.splitlines() if "window.open(" in line]
+        self.assertEqual(open_lines, ['$("open").onclick = () => window.open(canvasUrl, "_blank");'])
+        self.assertNotIn("waitCanvas", html)
+
     def test_default_still_starts_installed_services(self):
         import comfy_detect
         with patch.object(comfy_detect, "select", return_value={"running": False, "directory_known": True}), \
