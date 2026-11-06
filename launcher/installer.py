@@ -13,6 +13,7 @@ import httpx
 
 import catalog
 import comfy_detect
+import comfy_compat
 import paths
 import workflows
 from downloader import Progress, download
@@ -73,6 +74,16 @@ def python_has(code: str) -> bool:
                               capture_output=True, timeout=30).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def ensure_memfd_compat() -> bool:
+    installed = comfy_compat.ensure(paths.comfy_dir())
+    if installed:
+        log("已补装 memfd 兼容插件：仅在 Linux Python 缺少接口且旧 ComfyUI 直接调用时启用；不修改原源码")
+        detected = comfy_detect.discover()
+        if detected["running"] or detected.get("occupied"):
+            log("请在 Supervisor 中重启已有 comfyui 一次以加载兼容插件；不会自动停止外部实例")
+    return installed
 
 
 def install_comfy(torch_idx: str) -> None:

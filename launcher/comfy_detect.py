@@ -243,6 +243,7 @@ def api_model(fid: str, nodes: dict) -> str | None:
 
 def audit(pack_ids: list[str], gpu: dict | None, ram: float, force: bool = False) -> dict:
     import workflows
+    import comfy_compat
     result = discover(force)
     root = Path(result["directory"])
     nodes = result["runtime"].get("nodes", {})
@@ -262,6 +263,7 @@ def audit(pack_ids: list[str], gpu: dict | None, ram: float, force: bool = False
                  for name in workflows.templates(expected)]
     public = {k: v for k, v in result.items() if k != "runtime"}
     public.update(models=models, plugin=plugin, workflows=templates, required_nodes=required,
+                  memfd_compat=comfy_compat.status(root),
                   missing_nodes=missing_nodes,
                   core_missing=[n for n in missing_nodes if n not in {"UnetLoaderGGUF", "CLIPLoaderGGUF"}],
                    occupied=result.get("occupied", port_open(result["url"])))

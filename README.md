@@ -165,6 +165,18 @@ curl --noproxy '*' --max-time 60 -o /dev/null -w 'HTTP %{http_code}\n' http://12
 
 点「保存 ComfyUI 设置」后重新检测。认证覆盖检测、健康检查、任务提交、参考图上传、进度轮询和结果下载。凭据保存到被 Git 忽略的 `data/onekey/comfy-auth.json`（明文；Linux 权限 `0600`），不写入普通设置、工作流或日志，不通过查询 API 回传。保存后密码 / Token 框留空表示保留原凭据；取消勾选再保存会删除凭据。更换地址、用户名或认证类型时必须重新填写；凭据仅发送到保存时绑定的本机地址和端口，不发送给自动发现的其他实例，不跟随 HTTP 重定向。不支持网页登录 Cookie。原有服务正在使用时请先停止画布启动器管理的服务，再修改地址；外部 ComfyUI 无需停止。请不要把真实 Token 或密码发到聊天、日志或仓库中；泄露后应及时轮换。
 
+### 自动兼容缺少 `os.memfd_create` 的 Python
+
+安装 / 补齐功能或启动服务时，会自动将内置兼容插件放到选中 ComfyUI 的 `custom_nodes/canvas_onekey_memfd/`。无需重新下载模型，不修改 `comfy/anonymous_file.py` 或全局 `os` 模块，也不安装额外 pip 包。
+
+- 插件在 **ComfyUI 自己的 Python 进程**中判断：仅 Linux、`os.memfd_create` 不可调用、且匿名文件工厂仍直接调用旧接口时启用。
+- 使用 libc 的 `memfd_create`，保留匿名内存文件、`MFD_CLOEXEC`、初始大小及关闭释放语义；同时修正 `comfy.utils` 中已导入的旧函数引用。不会退回磁盘临时文件。
+- Python 已提供接口、ComfyUI 已升级或已手动修复时跳过，不重复打补丁。插件文件若已有不同内容，会报冲突，不覆盖用户修改。
+- **外部 ComfyUI 第一次补装后，请在 Supervisor 中重启 `comfyui` 一次**。运行中的进程不能靠重启画布热修复；实际启用时 ComfyUI 日志会出现 `[canvas-onekey] Enabled libc memfd compatibility`。
+- 若 libc 也没有接口，或容器禁止该系统调用，插件不能绕过系统限制，需要升级 / 调整运行环境。ComfyUI 必须允许加载此 custom node；使用 `--disable-all-custom-nodes` 的部署需由用户显式允许该插件。
+
+已安装记录不代表外部进程已加载，管理页会分别提示插件文件存在和是否检测到旧版调用。插件的真实 memfd 创建测试在 Linux CI 中执行；模型推理仍需 GPU 实测。
+
 ## 五、常见问题
 
 - **管理页显示"没找到 nvidia-smi"**：没装 NVIDIA 驱动，或者不是 NVIDIA 显卡。去 NVIDIA 官网装最新驱动。

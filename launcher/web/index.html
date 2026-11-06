@@ -228,6 +228,7 @@ async function auditComfy(force = true) {
     lines.push('GGUF 插件：' + (!a.plugin.required ? '所选功能不需要' : a.plugin.loaded ? '已加载' : a.plugin.installed ? '文件已安装，需启动/重启确认加载' : '缺失，将补装'));
     lines.push('节点：' + (!a.nodes_ready ? '尚未验证（节点清单请求失败，不等于节点缺失）' : a.missing_nodes.length ? '缺失 ' + a.missing_nodes.join('、') : '所选功能所需节点齐全'));
     if (a.core_missing.length) lines.push('⚠ 缺少内置节点，请升级原 ComfyUI 后重启；不会覆盖你的源码。');
+    if (a.memfd_compat) lines.push('memfd 兼容插件：' + (a.memfd_compat.installed ? '文件已安装（首次补装后需重启 ComfyUI；实际是否启用见其日志）' : '未安装，安装或启动时自动补齐') + (a.memfd_compat.legacy_call ? '；检测到旧版 os.memfd_create 调用' : '；新版或已修复代码不会重复打补丁'));
     lines.push('模型：' + a.models.filter(m => m.present).length + '/' + a.models.length + ' 已有');
     a.models.forEach(m => lines.push('  ' + (m.present ? '✓ ' : a.nodes_ready ? '缺失：' : '本地未找到，API 未核实：') + m.name + (m.visible ? '（API 可见，仅按文件名匹配）' : m.present ? '（本地大小校验；运行后确认可见）' : '')));
     lines.push('API 工作流模板：' + a.workflows.filter(w => w.present).length + '/' + a.workflows.length + ' 已有，缺失时安装补齐；非前端拖入式工作流');

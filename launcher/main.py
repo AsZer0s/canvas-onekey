@@ -160,6 +160,7 @@ def _install(pack_ids: list[str]) -> None:
         installer.install_comfy(c["torch"])
     if detected["running"] and (not detected["existing"] or not detected["directory_known"]):
         raise RuntimeError("已发现运行中的 ComfyUI，但无法确定安装目录；请填写 ComfyUI 目录以补装插件、模型和工作流")
+    installer.ensure_memfd_compat()
     # 已登记的功能也要一并复检，补齐被误删的模型 / 插件 / 工作流。
     repair_ids = list(dict.fromkeys(pack_ids + paths.load(paths.STATE, {}).get("packs", [])))
     enabled = {p["id"] for p in catalog.packs_for(c["gpu"], c["ram_gb"]) if p["enabled"]}
