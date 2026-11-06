@@ -146,7 +146,12 @@ curl --noproxy '*' --max-time 60 -o /dev/null -w 'HTTP %{http_code}\n' http://12
 
 401/403 通常表示认证拦截，HTML / 重定向通常表示连到了代理入口；请查看 Supervisor 的 ComfyUI 日志和实际启动命令，确认 `--port`，并填写同机原生 API 端口。不要为排错关闭认证或把 ComfyUI 暴露到公网。
 
-**可选 HTTP Basic Auth**：在「已有 ComfyUI 检测 / 复用」勾选「启用 HTTP Basic Auth」，填写用户名和密码，点「保存 ComfyUI 设置」后重新检测。认证覆盖检测、健康检查、任务提交、参考图上传、进度轮询和结果下载。密码保存到被 Git 忽略的 `data/onekey/comfy-auth.json`（明文；Linux 权限 `0600`），不写入普通设置、工作流或日志，不通过查询 API 回传。保存后密码框留空表示保留原密码；取消勾选再保存会删除凭据。更换地址或用户名时必须重新填写密码；凭据仅发送到保存时绑定的本机地址和端口，不发送给自动发现的其他实例，不跟随 HTTP 重定向。此功能是 HTTP Basic 认证，不支持 Bearer Token 或网页登录 Cookie。原有服务正在使用时请先停止画布启动器管理的服务，再修改地址；外部 ComfyUI 无需停止。
+**可选 HTTP 认证（Basic / Bearer）**：在「已有 ComfyUI 检测 / 复用」勾选「启用 HTTP 认证」，选择认证类型：
+
+- **Basic Auth**：填写用户名和密码。
+- **Bearer Token**：适用于 `Authorization: Bearer …`，只需填写 Token，不需要用户名。也可粘贴 `Bearer …` 或完整 `Authorization: Bearer …` 请求头，保存时会去掉前缀。
+
+点「保存 ComfyUI 设置」后重新检测。认证覆盖检测、健康检查、任务提交、参考图上传、进度轮询和结果下载。凭据保存到被 Git 忽略的 `data/onekey/comfy-auth.json`（明文；Linux 权限 `0600`），不写入普通设置、工作流或日志，不通过查询 API 回传。保存后密码 / Token 框留空表示保留原凭据；取消勾选再保存会删除凭据。更换地址、用户名或认证类型时必须重新填写；凭据仅发送到保存时绑定的本机地址和端口，不发送给自动发现的其他实例，不跟随 HTTP 重定向。不支持网页登录 Cookie。原有服务正在使用时请先停止画布启动器管理的服务，再修改地址；外部 ComfyUI 无需停止。请不要把真实 Token 或密码发到聊天、日志或仓库中；泄露后应及时轮换。
 
 ## 五、常见问题
 

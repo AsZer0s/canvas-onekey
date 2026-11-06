@@ -108,6 +108,7 @@ def health() -> dict:
             try:
                 response = httpx.get(url, timeout=2, trust_env=False,
                                      auth=paths.auth_for(paths.comfy_url()) if name == "comfyui" else None,
+                                     headers=paths.auth_headers_for(paths.comfy_url()) if name == "comfyui" else {},
                                      follow_redirects=False)
                 ok = response.is_success
                 if name == "comfyui":

@@ -31,6 +31,10 @@ _auth_spec.loader.exec_module(comfy_auth)
 def auth_for(url: str):
     return comfy_auth.client_auth(ONEKEY, url)
 
+
+def auth_headers_for(url: str) -> dict[str, str]:
+    return comfy_auth.client_headers(ONEKEY, url)
+
 COMFY_VERSION = "v0.43.2"
 COMFY_ZIP = f"https://github.com/comfyanonymous/ComfyUI/archive/refs/tags/{COMFY_VERSION}.zip"
 PORTS = {"setup": 10020, "canvas": 10027, "worker": 8089, "comfy": 8188}

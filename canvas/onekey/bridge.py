@@ -90,6 +90,7 @@ def comfy() -> str:
 async def call(path, method='GET', timeout=30, **kw):
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                     headers=comfy_auth.client_headers(DATA, comfy()),
                                      follow_redirects=False) as c:
             r = await c.request(method, comfy() + path, **kw)
     except httpx.HTTPError:
@@ -193,6 +194,7 @@ async def media_bytes(value: str) -> bytes:
 async def upload_comfy(value: str) -> str:
     raw = await media_bytes(value)
     async with httpx.AsyncClient(timeout=60, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                 headers=comfy_auth.client_headers(DATA, comfy()),
                                  follow_redirects=False) as c:
         r = await c.post(comfy() + '/upload/image', files={'image': ('canvas-' + uuid.uuid4().hex + '.png', raw, 'image/png')},
                          data={'subfolder': 'canvas', 'overwrite': 'false'})
@@ -253,6 +255,7 @@ async def execute(jid, b, kind):
                     e = entries[0]
                     name = jid + ('.png' if kind == 'image' else '.mp4')
                     async with httpx.AsyncClient(timeout=300, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
+                                                 headers=comfy_auth.client_headers(DATA, comfy()),
                                                  follow_redirects=False) as c:
                         r = await c.get(comfy() + '/view', params={k: e[k] for k in ('filename', 'subfolder', 'type') if k in e})
                         r.raise_for_status()

@@ -530,6 +530,31 @@ class LauncherTests(unittest.TestCase):
             auth.save(root, url, False)
             self.assertFalse((root / "comfy-auth.json").exists())
 
+    def test_bearer_storage_and_auth_type_switch(self):
+        auth = self.paths.comfy_auth
+        url = "http://127.0.0.1:8188"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for text in ("example-token", "Bearer example-token", "Authorization: Bearer example-token"):
+                auth.save(root, url, True, auth_type="bearer", token=text)
+                self.assertEqual(auth.client_headers(root, url), {"Authorization": "Bearer example-token"})
+                self.assertIsNone(auth.client_auth(root, url))
+                self.assertEqual(auth.client_headers(root, "http://127.0.0.1:8190"), {})
+                self.assertEqual(auth.client_headers(root, "http://example.com"), {})
+                self.assertNotIn("example-token", json.dumps(auth.status(root, url)))
+                self.assertEqual(auth.status(root, url)["type"], "bearer")
+            auth.save(root, url, True, auth_type="bearer")
+            self.assertTrue(auth.status(root, url)["token_saved"])
+            for token in ("", "one two", "abc\r\nInjected: value"):
+                with self.subTest(token=repr(token)), self.assertRaises(ValueError):
+                    auth.save(root, url, True, auth_type="bearer", token=token)
+            with self.assertRaises(ValueError):
+                auth.save(root, url, True, username="user")
+            auth.save(root, url, True, "user", "password")
+            self.assertEqual(auth.client_headers(root, url), {})
+            with self.assertRaises(ValueError):
+                auth.save(root, url, True, auth_type="bearer")
+
     def test_probe_sends_basic_auth_without_following_redirects(self):
         import base64
         import httpx
@@ -581,6 +606,39 @@ class LauncherTests(unittest.TestCase):
                 patch.object(self.services.httpx, "get", return_value=response) as get:
             self.assertTrue(self.services.health()["comfyui"]["ok"])
         self.assertEqual(get.call_args.kwargs["auth"], ("user", "password"))
+
+    def test_bearer_api_save_probe_health_without_token_disclosure(self):
+        import httpx
+        from fastapi.testclient import TestClient
+        auth_file = self.paths.ONEKEY / "comfy-auth.json"
+        self.addCleanup(lambda: auth_file.unlink(missing_ok=True))
+        settings = self.paths.SETTINGS
+        old = settings.read_bytes() if settings.exists() else None
+        self.addCleanup(lambda: settings.write_bytes(old) if old is not None else settings.unlink(missing_ok=True))
+        with TestClient(self.main.app) as client:
+            response = client.post("/api/settings", json={"comfy_url": "http://127.0.0.1:8188", "comfy_auth": {
+                "enabled": True, "type": "bearer", "token": "Bearer example-secret-token"}})
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("example-secret-token", response.text)
+            check = client.get("/api/check")
+            self.assertTrue(check.json()["comfy_auth"]["token_saved"])
+            self.assertNotIn("example-secret-token", check.text)
+            self.assertNotIn("example-secret-token", settings.read_text(encoding="utf-8"))
+        spec = importlib.util.spec_from_file_location("probe_bearer", ROOT / "launcher" / "comfy_detect.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = httpx.Client
+        def handler(request):
+            self.assertEqual(request.headers.get("Authorization"), "Bearer example-secret-token")
+            return httpx.Response(200, json={"system": {}} if request.url.path == "/system_stats" else {"KSampler": {}})
+        with patch.object(module.httpx, "Client", side_effect=lambda **kw: original(transport=httpx.MockTransport(handler), **kw)):
+            self.assertTrue(module.probe("http://127.0.0.1:8188")["nodes_ready"])
+        response = Mock(is_success=True)
+        response.json.return_value = {"system": {}}
+        with patch.object(self.services.httpx, "get", return_value=response) as get:
+            self.assertTrue(self.services.health()["comfyui"]["ok"])
+        self.assertIsNone(get.call_args.kwargs["auth"])
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer example-secret-token"})
 
     def test_process_is_reported_even_if_api_is_unavailable(self):
         import comfy_detect

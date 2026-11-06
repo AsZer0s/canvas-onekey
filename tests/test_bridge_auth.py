@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class BridgeAuthTests(unittest.TestCase):
     def test_all_comfy_requests_use_basic_auth(self):
+        self.check_requests("basic")
+
+    def test_all_comfy_requests_use_bearer_auth(self):
+        self.check_requests("bearer")
+
+    def check_requests(self, auth_type):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             onekey = ROOT / "canvas" / "onekey"
@@ -29,9 +35,12 @@ class BridgeAuthTests(unittest.TestCase):
                     bridge.c.close()
                 url = "http://127.0.0.1:8188"
                 bridge.INSTALLED.write_text('{"comfy": "' + url + '"}', encoding="utf-8")
-                bridge.comfy_auth.save(root, url, True, "test", "password")
+                if auth_type == "basic":
+                    bridge.comfy_auth.save(root, url, True, "test", "password")
+                else:
+                    bridge.comfy_auth.save(root, url, True, auth_type="bearer", token="example-test-token")
                 requests = []
-                expected = "Basic " + base64.b64encode(b"test:password").decode()
+                expected = "Basic " + base64.b64encode(b"test:password").decode() if auth_type == "basic" else "Bearer example-test-token"
                 def handler(request):
                     self.assertEqual(request.headers.get("Authorization"), expected)
                     requests.append(request.url.path)

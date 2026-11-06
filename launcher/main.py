@@ -118,10 +118,11 @@ def api_settings(body: dict):
     if "comfy_auth" in body:
         auth = body["comfy_auth"]
         if not isinstance(auth, dict) or not isinstance(auth.get("enabled"), bool):
-            raise HTTPException(400, "Basic Auth 配置格式无效")
+            raise HTTPException(400, "ComfyUI 认证配置格式无效")
         try:
             paths.comfy_auth.save(paths.ONEKEY, s.get("comfy_url") or paths.comfy_url(),
-                                  auth["enabled"], auth.get("username", ""), auth.get("password"))
+                                  auth["enabled"], auth.get("username", ""), auth.get("password"),
+                                  auth.get("type", "basic"), auth.get("token"))
         except ValueError as e:
             raise HTTPException(400, str(e))
         comfy_detect._cache.clear()
