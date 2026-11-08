@@ -12,6 +12,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -50,6 +51,9 @@ local = FastAPI(title='本机模型接入层', docs_url=None, redoc_url=None)
 GPU = asyncio.Lock()
 TASKS: set = set()
 last_family = {'v': None}
+logger = logging.getLogger(__name__)
+READ_RETRY_WINDOW = 300  # 已提交任务的只读请求，允许最多 5 分钟连续临时故障。
+TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 @local.middleware('http')
@@ -87,14 +91,41 @@ def comfy() -> str:
     return installed().get('comfy') or 'http://127.0.0.1:8188'
 
 
-async def call(path, method='GET', timeout=30, **kw):
-    try:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
-                                     headers=comfy_auth.client_headers(DATA, comfy()),
-                                     follow_redirects=False) as c:
-            r = await c.request(method, comfy() + path, **kw)
-    except httpx.HTTPError:
-        fail('连不上本机 ComfyUI：请确认一键包的启动窗口还开着，或在管理页点「重新启动」', 502)
+async def comfy_request(path, method='GET', timeout=30, retry_read=False, **kw):
+    """仅对任务已提交后的 history/view 只读操作重试，绝不自动重发 /prompt。"""
+    retry = retry_read and method == 'GET' and (path.startswith('/history/') or path == '/view')
+    deadline = time.monotonic() + READ_RETRY_WINDOW
+    attempts = 0
+    while True:
+        attempts += 1
+        url = comfy()
+        try:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False, auth=comfy_auth.client_auth(DATA, url),
+                                         headers=comfy_auth.client_headers(DATA, url), follow_redirects=False) as c:
+                response = await c.request(method, url + path, **kw)
+            if response.status_code not in TRANSIENT_STATUS or not retry:
+                if attempts > 1:
+                    logger.info('ComfyUI %s %s 已恢复连接（第 %s 次请求）', method, path, attempts)
+                return response
+            reason = f'HTTP {response.status_code}'
+        except httpx.TransportError as e:
+            reason = type(e).__name__
+            if not retry:
+                extra = '提交结果未知，请先检查 ComfyUI 队列，不要直接重复提交。' if path == '/prompt' else ''
+                fail(f'ComfyUI {method} {path} 通信失败（{reason}），地址 {url}。{extra}', 502)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            fail(f'ComfyUI {method} {path} 连续约 {READ_RETRY_WINDOW} 秒无法获取结果（{reason}），地址 {url}。'
+                 '任务可能仍在 ComfyUI 执行；请检查原实例日志和队列，不要直接重复生成。', 502)
+        delay = min(2 ** min(attempts, 4), remaining)
+        # 不记录请求体、响应体或认证头，避免泄露凭据 / 提示词。
+        logger.warning('ComfyUI %s %s 临时通信故障（%s），%.0f 秒后重试；不会重新提交生成任务',
+                       method, path, reason, delay)
+        await asyncio.sleep(delay)
+
+
+async def call(path, method='GET', timeout=30, retry_read=False, **kw):
+    r = await comfy_request(path, method, timeout, retry_read=retry_read, **kw)
     if not r.is_success:
         fail('ComfyUI 拒绝了请求：' + r.text[:1200], 502)
     return r.json() if r.content.strip() else {}  # /free 成功时不返回内容
@@ -237,7 +268,7 @@ async def execute(jid, b, kind):
             update(jid, prompt_id=pid)
             deadline = time.monotonic() + 3 * 3600
             while time.monotonic() < deadline:
-                item = (await call('/history/' + pid)).get(pid)
+                item = (await call('/history/' + pid, retry_read=True)).get(pid)
                 if item:
                     st = item.get('status', {})
                     if st.get('status_str') == 'error':
@@ -254,12 +285,10 @@ async def execute(jid, b, kind):
                         raise RuntimeError('ComfyUI 跑完了但没有返回图片或视频')
                     e = entries[0]
                     name = jid + ('.png' if kind == 'image' else '.mp4')
-                    async with httpx.AsyncClient(timeout=300, trust_env=False, auth=comfy_auth.client_auth(DATA, comfy()),
-                                                 headers=comfy_auth.client_headers(DATA, comfy()),
-                                                 follow_redirects=False) as c:
-                        r = await c.get(comfy() + '/view', params={k: e[k] for k in ('filename', 'subfolder', 'type') if k in e})
-                        r.raise_for_status()
-                        (MEDIA / name).write_bytes(r.content)
+                    r = await comfy_request('/view', timeout=300, retry_read=True,
+                                            params={k: e[k] for k in ('filename', 'subfolder', 'type') if k in e})
+                    r.raise_for_status()
+                    (MEDIA / name).write_bytes(r.content)
                     url = f'http://127.0.0.1:{CANVAS_PORT}/local/media/{name}'
                     update(jid, status='completed', url=url, video_url=url if kind == 'video' else None,
                            data=[{'url': url}] if kind == 'image' else None, completed_at=time.time())
