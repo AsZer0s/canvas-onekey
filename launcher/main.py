@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse  # noqa: E402
 
 import catalog  # noqa: E402
 import comfy_detect  # noqa: E402
+import comfy_api_test  # noqa: E402
 import gpu as gpucheck  # noqa: E402
 import installer  # noqa: E402
 import paths  # noqa: E402
@@ -141,6 +142,11 @@ def api_comfy_audit(packs: str = "", force: bool = False):
     c = system_check()
     ids = [p for p in packs.split(",") if p] if packs else paths.load(paths.STATE, {}).get("packs", [])
     return comfy_detect.audit(ids, c["gpu"], c["ram_gb"], force)
+
+
+@app.post("/api/comfy/test")
+def api_comfy_test():
+    return comfy_api_test.run()
 
 
 def _install(pack_ids: list[str]) -> None:

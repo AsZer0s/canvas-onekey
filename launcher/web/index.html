@@ -77,7 +77,9 @@ footer{color:var(--muted);font-size:13px}
       <div id="comfybearerfields" hidden><label>Token：<input type="password" id="comfytoken" autocomplete="new-password" placeholder="填写 Token，也可粘贴 Bearer … 或完整 Authorization 请求头" style="font:inherit;width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)"></label></div>
       <p class="sub" id="comfyauthnote" style="margin:4px 0">凭据仅保存在本机独立文件中，不回传页面；保存后留空表示保留原凭据。更换地址、用户名或认证类型时需重新填写。</p>
     </div>
-    <div class="btns"><button id="comfysave">保存 ComfyUI 设置</button><button id="comfycheck">重新检测所选功能</button></div>
+    <div class="btns"><button id="comfysave">保存 ComfyUI 设置</button><button id="comfycheck">重新检测所选功能</button><button id="comfyapitest">测试 ComfyUI API</button></div>
+    <p class="sub" style="margin:6px 0">API 测试使用已保存的地址和认证，修改后请先保存；只读检查，不提交生成任务。</p>
+    <pre id="comfyapitestreport" hidden aria-live="polite"></pre>
     <pre id="comfyreport">正在检测……</pre>
   </section>
 
@@ -237,6 +239,23 @@ async function auditComfy(force = true) {
   } catch (e) { $("comfyreport").textContent = e.message; }
 }
 $("comfycheck").onclick = () => auditComfy();
+$("comfyapitest").onclick = async () => {
+  const button = $("comfyapitest"), report = $("comfyapitestreport");
+  button.disabled = true;
+  report.hidden = false;
+  report.textContent = "正在测试已保存的 ComfyUI API 配置……节点清单可能需要等待约 60 秒。";
+  try {
+    const result = await api('/api/comfy/test', {method: 'POST'});
+    report.textContent = [
+      '测试地址：' + result.url,
+      '认证：' + result.auth_type + '（不显示凭据）',
+      (result.ok ? '✓ 全部只读接口通过' : '⚠ 部分接口未通过') + '，总耗时 ' + result.elapsed_ms + ' ms',
+      ...result.checks.map(c => (c.ok ? '✓ ' : '✗ ') + c.name + ' ' + c.path + ' | HTTP ' + (c.status_code ?? '无响应') + ' | ' + c.elapsed_ms + ' ms | ' + c.detail),
+      result.note,
+    ].join('\n');
+  } catch (e) { report.textContent = '无法完成 API 测试：' + e.message; }
+  finally { button.disabled = false; }
+};
 function authTypeChanged() {
   const bearer = $("comfyauthtype").value === "bearer";
   $("comfybasicfields").hidden = bearer;

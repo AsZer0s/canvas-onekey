@@ -225,6 +225,16 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(open_lines, ['$("open").onclick = () => window.open(canvasUrl, "_blank");'])
         self.assertNotIn("waitCanvas", html)
 
+    def test_comfy_api_test_endpoint_uses_diagnostics(self):
+        from fastapi.testclient import TestClient
+        result = {"ok": True, "checks": [], "url": "http://127.0.0.1:8188"}
+        with patch.object(self.main.comfy_api_test, "run", return_value=result) as run:
+            with TestClient(self.main.app) as client:
+                response = client.post('/api/comfy/test')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), result)
+        run.assert_called_once_with()
+
     def test_default_still_starts_installed_services(self):
         import comfy_detect
         with patch.object(comfy_detect, "select", return_value={"running": False, "directory_known": True}), \
